@@ -179,6 +179,27 @@ class TestGetRecommendations:
         ids = [t.id for t in tracks]
         assert len(ids) == len(set(ids))
 
+    def test_filters_out_seen_track_ids(self, client, mock_sp, monkeypatch):
+        import history
+        # Pretend t1 was already seen
+        monkeypatch.setattr(history, "HISTORY_PATH", __import__("pathlib").Path("/tmp/dj-rara-seen-test.json"))
+        from history import add_seen_tracks
+        add_seen_tracks(["t1"])
+
+        mock_sp.recommendations.return_value = {
+            "tracks": [_raw_track(id="t1"), _raw_track(id="t2")]
+        }
+        tracks = client.get_recommendations(
+            seed_artist_ids=["a1"], seed_track_ids=[],
+            mood="chill", genres=[], limit=10,
+        )
+        ids = [t.id for t in tracks]
+        assert "t1" not in ids
+        assert "t2" in ids
+
+        # Cleanup
+        __import__("pathlib").Path("/tmp/dj-rara-seen-test.json").unlink(missing_ok=True)
+
 
 class TestCreatePlaylist:
     def test_returns_playlist_object(self, client, mock_sp):
