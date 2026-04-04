@@ -1,6 +1,4 @@
-import random
 import time
-from datetime import date
 
 import spotipy
 
@@ -90,7 +88,8 @@ class SpotifyClient:
         while results and len(artists) < limit:
             artists.extend([_parse_artist(a) for a in results["artists"]["items"]])
             if results["artists"]["next"] and len(artists) < limit:
-                results = _call_with_retry(lambda: self.sp.next(results["artists"]))
+                current = results["artists"]
+                results = _call_with_retry(lambda r=current: self.sp.next(r))
             else:
                 break
         return artists[:limit]
