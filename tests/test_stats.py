@@ -1,5 +1,5 @@
 import pytest
-from screens.stats import _bar, _genre_percentages, _avg_audio_features, BAR_WIDTH
+from dj_rara.screens.stats import _bar, _genre_percentages, _avg_audio_features, BAR_WIDTH
 
 
 class FakeArtist:

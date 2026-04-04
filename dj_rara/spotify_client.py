@@ -4,8 +4,8 @@ from datetime import date
 
 import spotipy
 
-from history import get_seen_track_ids
-from models import Artist, Playlist, Track
+from .history import get_seen_track_ids
+from .models import Artist, Playlist, Track
 
 MOOD_FEATURES: dict[str, dict[str, float]] = {
     "chill":      {"target_energy": 0.30, "target_valence": 0.60,
@@ -99,8 +99,11 @@ class SpotifyClient:
     def get_audio_features(self, track_ids: list[str]) -> dict[str, dict]:
         if not track_ids:
             return {}
-        raw = _call_with_retry(lambda: self.sp.audio_features(track_ids))
-        return {f["id"]: f for f in raw if f is not None}
+        try:
+            raw = _call_with_retry(lambda: self.sp.audio_features(track_ids))
+            return {f["id"]: f for f in raw if f is not None}
+        except Exception:
+            return {}
 
     def get_recommendations(
         self,
@@ -109,58 +112,92 @@ class SpotifyClient:
         mood: str,
         genres: list[str],
         limit: int = 30,
+        discovery_ratio: float = 0.5,
     ) -> list[Track]:
-        features = mood_to_features(mood)
+        # Spotify deprecated /recommendations for new apps in late 2024.
+        # Strategy: split into "familiar" pool (artist tops + saved + user tops)
+        # and "discovery" pool (search). discovery_ratio controls the mix.
         seen_ids = get_seen_track_ids()
-        results: list[Track] = []
-        seen_in_session: set[str] = set()
+        familiar: list[Track] = []
+        discovery: list[Track] = []
+        familiar_ids: set[str] = set()
+        discovery_ids: set[str] = set()
 
-        artists = list(seed_artist_ids)
-        tracks_pool = list(seed_track_ids)
-        random.shuffle(artists)
-        random.shuffle(tracks_pool)
+        def _add_familiar(item: dict) -> None:
+            if not item:
+                return
+            tid = item.get("id")
+            if tid and tid not in seen_ids and tid not in familiar_ids and tid not in discovery_ids:
+                familiar.append(_parse_track(item))
+                familiar_ids.add(tid)
 
-        # Reserve 1 genre seed slot if genres provided; rest split between artists/tracks
-        genre_seeds = genres[:1] if genres else []
-        remaining = 5 - len(genre_seeds)
-        max_artists = min(3, remaining, len(artists))
-        max_tracks = min(remaining - max_artists, len(tracks_pool))
+        def _add_discovery(item: dict) -> None:
+            if not item:
+                return
+            tid = item.get("id")
+            if tid and tid not in seen_ids and tid not in familiar_ids and tid not in discovery_ids:
+                discovery.append(_parse_track(item))
+                discovery_ids.add(tid)
 
-        iterations = max((limit // 50) + 2, 3)
-
-        for i in range(iterations):
-            if len(results) >= limit:
-                break
-
-            a_start = (i * max(max_artists, 1)) % max(len(artists), 1)
-            t_start = (i * max(max_tracks, 1)) % max(len(tracks_pool), 1)
-
-            batch_artists = artists[a_start : a_start + max_artists]
-            batch_tracks = tracks_pool[t_start : t_start + max_tracks]
-
-            if not batch_artists and not batch_tracks and not genre_seeds:
-                break
-
-            params: dict = {"limit": min(100, limit), **features}
-            if batch_artists:
-                params["seed_artists"] = batch_artists
-            if batch_tracks:
-                params["seed_tracks"] = batch_tracks
-            if genre_seeds:
-                params["seed_genres"] = genre_seeds
-
+        # --- Familiar pool ---
+        artist_ids = list(seed_artist_ids)
+        random.shuffle(artist_ids)
+        for artist_id in artist_ids[:8]:
             try:
-                raw = _call_with_retry(lambda p=params: self.sp.recommendations(**p))
+                raw = _call_with_retry(lambda a=artist_id: self.sp.artist_top_tracks(a))
+                for item in raw["tracks"]:
+                    _add_familiar(item)
             except Exception:
                 continue
 
-            for item in raw["tracks"]:
-                tid = item["id"]
-                if tid not in seen_ids and tid not in seen_in_session:
-                    results.append(_parse_track(item))
-                    seen_in_session.add(tid)
+        try:
+            raw = _call_with_retry(lambda: self.sp.current_user_saved_tracks(limit=50))
+            for item in raw["items"]:
+                if item.get("track"):
+                    _add_familiar(item["track"])
+        except Exception:
+            pass
 
-        return results[:limit]
+        if seed_track_ids:
+            try:
+                raw = _call_with_retry(lambda ids=seed_track_ids[:50]: self.sp.tracks(ids))
+                for item in raw["tracks"]:
+                    _add_familiar(item)
+            except Exception:
+                pass
+
+        # --- Discovery pool ---
+        MOOD_QUERIES = {
+            "chill":      ["chill acoustic", "lo-fi indie", "mellow vibes"],
+            "energetic":  ["high energy rock", "upbeat dance", "power pop"],
+            "focus":      ["focus instrumental", "ambient study", "concentration"],
+            "melancholy": ["sad indie folk", "melancholy alternative", "emotional"],
+        }
+        queries = list(MOOD_QUERIES.get(mood, [mood]))
+        for genre in genres[:2]:
+            queries.insert(0, f"{genre} {mood}")
+
+        for query in queries[:4]:
+            try:
+                raw = _call_with_retry(lambda q=query: self.sp.search(q=q, type="track", limit=50))
+                for item in raw["tracks"]["items"]:
+                    _add_discovery(item)
+            except Exception:
+                continue
+
+        # Mix pools according to discovery_ratio
+        random.shuffle(familiar)
+        random.shuffle(discovery)
+        n_discovery = int(limit * discovery_ratio)
+        n_familiar = limit - n_discovery
+        mixed = familiar[:n_familiar] + discovery[:n_discovery]
+        # If one pool is short, fill with the other
+        if len(mixed) < limit:
+            used = set(t.id for t in mixed)
+            filler = [t for t in (discovery + familiar) if t.id not in used]
+            mixed += filler[:limit - len(mixed)]
+        random.shuffle(mixed)
+        return mixed[:limit]
 
     def create_playlist(
         self,

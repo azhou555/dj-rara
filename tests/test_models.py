@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from models import Artist, Playlist, Track
+from dj_rara.models import Artist, Playlist, Track
 
 
 def test_track_creation():

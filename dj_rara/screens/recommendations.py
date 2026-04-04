@@ -1,3 +1,9 @@
+import subprocess
+import tempfile
+import os
+import urllib.parse
+import urllib.request
+import json
 import webbrowser
 from datetime import date
 
@@ -9,8 +15,32 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static
 from textual import work
 
-from history import add_playlist, add_seen_tracks
-from models import Track
+from ..history import add_playlist, add_seen_tracks
+from ..models import Track
+
+
+def _itunes_preview(track: Track) -> str | None:
+    """Look up a 30-second preview URL from the iTunes Search API."""
+    try:
+        artist = track.artists[0] if track.artists else ""
+        query = urllib.parse.urlencode({"term": f"{artist} {track.name}", "entity": "song", "limit": 5})
+        url = f"https://itunes.apple.com/search?{query}"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read())
+        name_lower = track.name.lower()
+        for result in data.get("results", []):
+            if name_lower in result.get("trackName", "").lower():
+                preview = result.get("previewUrl")
+                if preview:
+                    return preview
+        # No exact match — return first available preview
+        for result in data.get("results", []):
+            preview = result.get("previewUrl")
+            if preview:
+                return preview
+    except Exception:
+        pass
+    return None
 
 
 class RecommendationsScreen(Screen):
@@ -22,7 +52,7 @@ class RecommendationsScreen(Screen):
         Binding("c", "create_playlist", "create playlist", show=True),
         Binding("s", "go_stats", "stats", show=False),
         Binding("p", "go_playlists", "playlists", show=False),
-        Binding("escape", "pop_screen", "back", show=True),
+        Binding("escape", "go_back", "back", show=True, priority=True),
     ]
 
     CSS = """
@@ -33,8 +63,8 @@ class RecommendationsScreen(Screen):
     #header {
         height: 3;
         padding: 0 2;
-        background: #111111;
-        border-bottom: solid #222222;
+        background: $surface;
+        border-bottom: solid $subtle-border;
         content-align: left middle;
     }
 
@@ -45,7 +75,7 @@ class RecommendationsScreen(Screen):
     #preview-msg {
         height: 1;
         padding: 0 2;
-        color: #555555;
+        color: $muted;
         display: none;
     }
 
@@ -56,10 +86,10 @@ class RecommendationsScreen(Screen):
     #status-bar {
         height: 2;
         padding: 0 2;
-        background: #111111;
-        border-top: solid #222222;
+        background: $surface;
+        border-top: solid $subtle-border;
         content-align: left middle;
-        color: #555555;
+        color: $muted;
     }
     """
 
@@ -68,8 +98,8 @@ class RecommendationsScreen(Screen):
         self._tracks = tracks
         self._mood = mood
         self._genres = genres
-        # "default" | "kept" | "skipped"
         self._states: dict[str, str] = {t.id: "default" for t in tracks}
+        self._preview_proc: subprocess.Popen | None = None
 
     def compose(self) -> ComposeResult:
         genre_str = " · ".join(self._genres) if self._genres else "all genres"
@@ -144,17 +174,58 @@ class RecommendationsScreen(Screen):
         self.query_one("#status-bar", Static).update(self._status_text())
 
     def action_open_preview(self) -> None:
+        # If something is playing, stop it
+        if self._preview_proc and self._preview_proc.poll() is None:
+            self._preview_proc.terminate()
+            self._preview_proc = None
+            msg = self.query_one("#preview-msg", Static)
+            msg.update("♪ stopped")
+            self.set_timer(1.5, lambda: msg.remove_class("visible"))
+            return
         track = self._current_track()
         if not track:
             return
         msg = self.query_one("#preview-msg", Static)
-        if track.preview_url:
-            webbrowser.open(track.preview_url)
-            msg.update(f"♪ opening preview: {track.name}")
-        else:
-            msg.update("♪ no preview available for this track")
+        msg.update("♪ fetching preview...")
         msg.add_class("visible")
-        self.set_timer(3.0, lambda: msg.remove_class("visible"))
+        self._fetch_and_play_preview(track)
+
+    @work(thread=True)
+    def _fetch_and_play_preview(self, track: Track) -> None:
+        preview_url = track.preview_url or _itunes_preview(track)
+        if preview_url:
+            # Stop any running preview first
+            if self._preview_proc and self._preview_proc.poll() is None:
+                self._preview_proc.terminate()
+            # Download to temp file and play with afplay (no browser tab)
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
+                    tmp_path = tmp.name
+                urllib.request.urlretrieve(preview_url, tmp_path)
+                self._preview_proc = subprocess.Popen(["afplay", tmp_path])
+                self.app.call_from_thread(
+                    lambda n=track.name: self.query_one("#preview-msg", Static).update(f"♪ previewing: {n}  (o to stop)")
+                )
+                self._preview_proc.wait()
+            except Exception:
+                self.app.call_from_thread(
+                    lambda: self.query_one("#preview-msg", Static).update("♪ preview failed")
+                )
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+        else:
+            self.app.call_from_thread(lambda: (
+                webbrowser.open(f"https://open.spotify.com/track/{track.id}"),
+                self.query_one("#preview-msg", Static).update(f"♪ no preview — opening in spotify: {track.name}"),
+            ))
+        self.app.call_from_thread(
+            lambda: self.set_timer(2.0, lambda: self.query_one("#preview-msg", Static).remove_class("visible"))
+        )
 
     def action_create_playlist(self) -> None:
         kept = [t for t in self._tracks if self._states[t.id] == "kept"]
@@ -186,14 +257,17 @@ class RecommendationsScreen(Screen):
             )
             add_playlist(playlist)
             add_seen_tracks([t.id for t in tracks])
-            self.call_from_thread(
+            self.app.call_from_thread(
                 lambda: self.notify(f"♪ playlist created — {name}", severity="information")
             )
-            self.call_from_thread(lambda: webbrowser.open(playlist.url))
+            self.app.call_from_thread(lambda: webbrowser.open(playlist.url))
         except Exception as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 lambda: self.notify(f"♪ could not create playlist: {e}", severity="error")
             )
+
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
 
     def action_go_stats(self) -> None:
         from screens.stats import StatsScreen

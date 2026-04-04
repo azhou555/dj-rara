@@ -1,0 +1,156 @@
+<style>
+  .arch { display: flex; gap: 32px; margin-top: 24px; align-items: flex-start; }
+  .column { flex: 1; }
+  .column h3 { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.1em; color: #1db954; margin: 0 0 12px; }
+
+  .file-tree {
+    font-family: 'Courier New', monospace;
+    font-size: 0.82em;
+    line-height: 2;
+    background: #0d0d0d;
+    border-radius: 10px;
+    padding: 16px 20px;
+  }
+  .f-dir { color: #80cbc4; }
+  .f-new { color: #1db954; }
+  .f-keep { color: #888; }
+  .f-del { color: #555; text-decoration: line-through; }
+  .f-badge {
+    font-size: 0.7em;
+    padding: 1px 6px;
+    border-radius: 8px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .b-new { background: #1a2e1f; color: #1db954; }
+  .b-keep { background: #1a1a2e; color: #80cbc4; }
+  .b-del { background: #2e1a1a; color: #f48fb1; }
+
+  .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .flow-box {
+    background: #1a1a1a;
+    border: 1.5px solid #333;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.82em;
+    color: #e0e0e0;
+  }
+  .flow-box span { color: #1db954; font-weight: 600; }
+  .flow-box .sub { color: #666; font-size: 0.85em; margin-top: 3px; }
+  .flow-arrow {
+    text-align: center;
+    color: #1db954;
+    font-size: 1.1em;
+    line-height: 1.8;
+  }
+  .screen-box {
+    background: #1a1a1a;
+    border: 1.5px solid #1db954;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.82em;
+    color: #e0e0e0;
+    margin-bottom: 8px;
+  }
+  .screen-box .name { color: #1db954; font-weight: 600; margin-bottom: 3px; }
+  .screen-box .desc { color: #888; font-size: 0.85em; }
+  .screen-box .keys { margin-top: 6px; }
+  .screen-box .key {
+    display: inline-block;
+    background: #0d0d0d;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: monospace;
+    font-size: 0.78em;
+    color: #80cbc4;
+    margin-right: 4px;
+  }
+  .legend { display: flex; gap: 16px; margin-top: 16px; font-size: 0.78em; }
+  .leg-item { display: flex; align-items: center; gap: 6px; color: #888; }
+  .leg-dot { width: 10px; height: 10px; border-radius: 50%; }
+</style>
+
+<h2>Architecture Design</h2>
+<p class="subtitle">File structure, screen map, and data flow — does this look right?</p>
+
+<div class="arch">
+
+  <!-- File tree -->
+  <div class="column">
+    <h3>File Structure</h3>
+    <div class="file-tree">
+      <span class="f-dir">dj-rara/</span><br>
+      &nbsp;├── <span class="f-new">main.py</span> <span class="f-badge b-new">rewrite</span><br>
+      &nbsp;├── <span class="f-new">app.py</span> <span class="f-badge b-new">new</span><br>
+      &nbsp;├── <span class="f-new">screens/</span> <span class="f-badge b-new">new</span><br>
+      &nbsp;│&nbsp;&nbsp; ├── <span class="f-new">mood.py</span><br>
+      &nbsp;│&nbsp;&nbsp; ├── <span class="f-new">recommendations.py</span><br>
+      &nbsp;│&nbsp;&nbsp; ├── <span class="f-new">stats.py</span><br>
+      &nbsp;│&nbsp;&nbsp; └── <span class="f-new">playlists.py</span><br>
+      &nbsp;├── <span class="f-keep">spotify_auth.py</span> <span class="f-badge b-keep">keep</span><br>
+      &nbsp;├── <span class="f-new">spotify_client.py</span> <span class="f-badge b-new">new</span><br>
+      &nbsp;├── <span class="f-new">models.py</span> <span class="f-badge b-new">new</span><br>
+      &nbsp;├── <span class="f-new">history.py</span> <span class="f-badge b-new">new</span><br>
+      &nbsp;├── <span class="f-del">recommendation_engine.py</span> <span class="f-badge b-del">replaced</span><br>
+      &nbsp;├── <span class="f-keep">requirements.txt</span> <span class="f-badge b-keep">+ textual</span><br>
+      &nbsp;└── <span class="f-keep">.env / .env.example</span>
+    </div>
+    <div class="legend">
+      <div class="leg-item"><div class="leg-dot" style="background:#1db954"></div> new / rewritten</div>
+      <div class="leg-item"><div class="leg-dot" style="background:#80cbc4"></div> kept as-is</div>
+      <div class="leg-item"><div class="leg-dot" style="background:#555"></div> removed</div>
+    </div>
+  </div>
+
+  <!-- Screens -->
+  <div class="column">
+    <h3>Screen Flow</h3>
+    <div class="flow">
+      <div class="screen-box">
+        <div class="name">🌙 MoodScreen</div>
+        <div class="desc">Mood picker · Genre chips · Time range · "Discover" button</div>
+        <div class="keys"><span class="key">enter</span> discover <span class="key">s</span> stats <span class="key">p</span> playlists</div>
+      </div>
+      <div class="flow-arrow">↓ (loading overlay)</div>
+      <div class="screen-box">
+        <div class="name">🎵 RecommendationsScreen</div>
+        <div class="desc">Scrollable track list · keep/skip curation · preview</div>
+        <div class="keys"><span class="key">↑↓</span> navigate <span class="key">space</span> keep/skip <span class="key">o</span> preview <span class="key">c</span> create playlist</div>
+      </div>
+      <div class="flow-arrow">⇄ (tab navigation)</div>
+      <div class="screen-box">
+        <div class="name">📊 StatsScreen</div>
+        <div class="desc">Music DNA · Genre bars · Audio features · Top artists</div>
+        <div class="keys"><span class="key">r</span> recommendations <span class="key">p</span> playlists</div>
+      </div>
+      <div class="flow-arrow">⇄</div>
+      <div class="screen-box">
+        <div class="name">📋 PlaylistManagerScreen</div>
+        <div class="desc">Past DJ Rara playlists · Open in Spotify · Track count</div>
+        <div class="keys"><span class="key">enter</span> open in browser <span class="key">r</span> recommendations</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Data flow -->
+  <div class="column">
+    <h3>Data Flow</h3>
+    <div class="flow">
+      <div class="flow-box"><span>spotify_auth.py</span><div class="sub">OAuth → spotipy client</div></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box"><span>spotify_client.py</span><div class="sub">All API calls (artists, tracks, recs, playlists)</div></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box"><span>models.py</span><div class="sub">Track, Artist, Playlist dataclasses</div></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box"><span>app.py + screens/</span><div class="sub">Textual app consumes models, renders UI</div></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box"><span>history.py</span><div class="sub">~/.dj-rara.json — past playlists, seen tracks</div></div>
+    </div>
+  </div>
+
+</div>

@@ -60,8 +60,8 @@ class StatsScreen(Screen):
     #header {
         height: 3;
         padding: 0 2;
-        background: #111111;
-        border-bottom: solid #222222;
+        background: $surface;
+        border-bottom: solid $subtle-border;
         content-align: left middle;
     }
 
@@ -71,18 +71,18 @@ class StatsScreen(Screen):
     }
 
     .stat-heading {
-        color: #80cbc4;
+        color: $accent;
         text-style: bold;
         margin-top: 1;
         margin-bottom: 0;
     }
 
     .bar-line {
-        color: #cccccc;
+        color: $foreground;
     }
 
     .artist-line {
-        color: #cccccc;
+        color: $foreground;
     }
     """
 
@@ -109,11 +109,12 @@ class StatsScreen(Screen):
             top_artists = client.get_top_artists(time_range=time_range, limit=20)
             top_tracks = client.get_top_tracks(time_range=time_range, limit=20)
             audio_features = client.get_audio_features([t.id for t in top_tracks]) if top_tracks else {}
-            self.call_from_thread(
-                self._render, display_name, top_artists, top_tracks[:5], audio_features
+            top_five = top_tracks[:5]
+            self.app.call_from_thread(
+                lambda dn=display_name, ta=top_artists, tf=top_five, af=audio_features: self._render(dn, ta, tf, af)
             )
         except Exception as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 lambda: self.query_one("#loading-msg", Static).update(
                     f"· could not load stats: {e}"
                 )
@@ -125,6 +126,10 @@ class StatsScreen(Screen):
             self.query_one("#loading-msg", Static).remove()
         except Exception:
             pass
+
+        theme = self.app.current_theme
+        primary = theme.primary
+        accent = theme.accent or theme.primary
 
         tr = TIME_LABELS[TIME_RANGES[self._time_idx]]
         self.query_one("#header", Static).update(
@@ -138,7 +143,7 @@ class StatsScreen(Screen):
             for genre, pct in genres:
                 bar = _bar(pct)
                 scroll.mount(Static(
-                    f"  [dim]{genre:<20}[/dim] [green]{bar}[/green] [dim]{pct:.0%}[/dim]",
+                    f"  [dim]{genre:<20}[/dim] [{primary}]{bar}[/{primary}] [dim]{pct:.0%}[/dim]",
                     markup=True, classes="bar-line"
                 ))
         else:
@@ -157,7 +162,7 @@ class StatsScreen(Screen):
             val = avgs[key]
             bar = _bar(val)
             scroll.mount(Static(
-                f"  [dim]{label:<20}[/dim] [cyan]{bar}[/cyan] [dim]{val:.2f}[/dim]",
+                f"  [dim]{label:<20}[/dim] [{accent}]{bar}[/{accent}] [dim]{val:.2f}[/dim]",
                 markup=True, classes="bar-line"
             ))
 
@@ -166,7 +171,7 @@ class StatsScreen(Screen):
         if top_five_artists:
             for i, artist in enumerate(top_five_artists, 1):
                 scroll.mount(Static(
-                    f"  [green]{i}.[/green]  {artist.name}",
+                    f"  [{primary}]{i}.[/{primary}]  {artist.name}",
                     markup=True, classes="artist-line"
                 ))
         else:

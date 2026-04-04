@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from models import Track, Artist, Playlist
+from dj_rara.models import Track, Artist, Playlist
 
 
 @pytest.fixture
@@ -12,7 +12,7 @@ def mock_sp():
 
 @pytest.fixture
 def client(mock_sp):
-    from spotify_client import SpotifyClient
+    from dj_rara.spotify_client import SpotifyClient
     return SpotifyClient(mock_sp)
 
 
@@ -112,33 +112,41 @@ class TestGetAudioFeatures:
 
 class TestMoodToFeatures:
     def test_chill(self):
-        from spotify_client import mood_to_features
+        from dj_rara.spotify_client import mood_to_features
         f = mood_to_features("chill")
         assert f["target_energy"] == pytest.approx(0.30)
         assert f["target_valence"] == pytest.approx(0.60)
         assert f["target_acousticness"] == pytest.approx(0.70)
 
     def test_energetic(self):
-        from spotify_client import mood_to_features
+        from dj_rara.spotify_client import mood_to_features
         assert mood_to_features("energetic")["target_energy"] == pytest.approx(0.85)
 
     def test_focus(self):
-        from spotify_client import mood_to_features
+        from dj_rara.spotify_client import mood_to_features
         assert mood_to_features("focus")["target_energy"] == pytest.approx(0.50)
 
     def test_melancholy(self):
-        from spotify_client import mood_to_features
+        from dj_rara.spotify_client import mood_to_features
         assert mood_to_features("melancholy")["target_energy"] == pytest.approx(0.25)
 
     def test_unknown_mood_raises(self):
-        from spotify_client import mood_to_features
+        from dj_rara.spotify_client import mood_to_features
         with pytest.raises(ValueError, match="Unknown mood"):
             mood_to_features("groovy")
 
 
 class TestGetRecommendations:
+    def _setup_mock(self, mock_sp, tracks=None):
+        """Wire up all endpoints the new recommendations strategy calls."""
+        tracks = tracks or [_raw_track(id="r1")]
+        mock_sp.artist_top_tracks.return_value = {"tracks": tracks}
+        mock_sp.current_user_saved_tracks.return_value = {"items": []}
+        mock_sp.tracks.return_value = {"tracks": []}
+        mock_sp.search.return_value = {"tracks": {"items": []}}
+
     def test_returns_track_objects(self, client, mock_sp):
-        mock_sp.recommendations.return_value = {"tracks": [_raw_track(id="r1")]}
+        self._setup_mock(mock_sp, tracks=[_raw_track(id="r1")])
         tracks = client.get_recommendations(
             seed_artist_ids=["a1", "a2"],
             seed_track_ids=["t1"],
@@ -149,29 +157,30 @@ class TestGetRecommendations:
         assert len(tracks) >= 1
         assert isinstance(tracks[0], Track)
 
-    def test_passes_mood_audio_features(self, client, mock_sp):
-        mock_sp.recommendations.return_value = {"tracks": [_raw_track()]}
+    def test_uses_artist_top_tracks(self, client, mock_sp):
+        self._setup_mock(mock_sp, tracks=[_raw_track(id="r1")])
         client.get_recommendations(
             seed_artist_ids=["a1"], seed_track_ids=[],
             mood="chill", genres=[], limit=5,
         )
-        kwargs = mock_sp.recommendations.call_args[1]
-        assert kwargs["target_energy"] == pytest.approx(0.30)
-        assert kwargs["target_valence"] == pytest.approx(0.60)
+        mock_sp.artist_top_tracks.assert_called()
 
-    def test_includes_genre_seeds_when_provided(self, client, mock_sp):
-        mock_sp.recommendations.return_value = {"tracks": [_raw_track()]}
+    def test_incorporates_genre_in_search(self, client, mock_sp):
+        self._setup_mock(mock_sp)
         client.get_recommendations(
-            seed_artist_ids=["a1", "a2"], seed_track_ids=[],
+            seed_artist_ids=["a1"], seed_track_ids=[],
             mood="chill", genres=["indie folk"], limit=5,
         )
-        kwargs = mock_sp.recommendations.call_args[1]
-        assert "seed_genres" in kwargs
-        assert "indie folk" in kwargs["seed_genres"]
+        # genre should appear in at least one search query
+        calls = [str(c) for c in mock_sp.search.call_args_list]
+        assert any("indie folk" in c for c in calls)
 
     def test_deduplicates_results(self, client, mock_sp):
         dup = _raw_track(id="dup")
-        mock_sp.recommendations.return_value = {"tracks": [dup, dup]}
+        mock_sp.artist_top_tracks.return_value = {"tracks": [dup, dup]}
+        mock_sp.current_user_saved_tracks.return_value = {"items": [{"track": dup}]}
+        mock_sp.tracks.return_value = {"tracks": []}
+        mock_sp.search.return_value = {"tracks": {"items": []}}
         tracks = client.get_recommendations(
             seed_artist_ids=["a1"], seed_track_ids=[],
             mood="chill", genres=[], limit=10,
@@ -180,15 +189,15 @@ class TestGetRecommendations:
         assert len(ids) == len(set(ids))
 
     def test_filters_out_seen_track_ids(self, client, mock_sp, monkeypatch):
-        import history
-        # Pretend t1 was already seen
+        import dj_rara.history as history
         monkeypatch.setattr(history, "HISTORY_PATH", __import__("pathlib").Path("/tmp/dj-rara-seen-test.json"))
-        from history import add_seen_tracks
+        from dj_rara.history import add_seen_tracks
         add_seen_tracks(["t1"])
 
-        mock_sp.recommendations.return_value = {
-            "tracks": [_raw_track(id="t1"), _raw_track(id="t2")]
-        }
+        mock_sp.artist_top_tracks.return_value = {"tracks": [_raw_track(id="t1"), _raw_track(id="t2")]}
+        mock_sp.current_user_saved_tracks.return_value = {"items": []}
+        mock_sp.tracks.return_value = {"tracks": []}
+        mock_sp.search.return_value = {"tracks": {"items": []}}
         tracks = client.get_recommendations(
             seed_artist_ids=["a1"], seed_track_ids=[],
             mood="chill", genres=[], limit=10,
@@ -197,7 +206,6 @@ class TestGetRecommendations:
         assert "t1" not in ids
         assert "t2" in ids
 
-        # Cleanup
         __import__("pathlib").Path("/tmp/dj-rara-seen-test.json").unlink(missing_ok=True)
 
 

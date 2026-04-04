@@ -1,0 +1,106 @@
+<style>
+  .opts { display: flex; flex-direction: column; gap: 16px; margin-top: 24px; }
+  .opt {
+    border: 2px solid #333;
+    border-radius: 12px;
+    padding: 18px 22px;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: #1a1a1a;
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+  }
+  .opt:hover { border-color: #888; }
+  .opt.selected { border-color: #1db954; background: #1a2e1f; }
+  .opt .letter {
+    font-size: 1.1em;
+    font-weight: 700;
+    color: #1db954;
+    min-width: 24px;
+    padding-top: 2px;
+  }
+  .opt-body h3 { margin: 0 0 6px; color: #e0e0e0; font-size: 1em; }
+  .opt-body p { margin: 0 0 10px; font-size: 0.85em; color: #999; line-height: 1.5; }
+  .terminal-preview {
+    padding: 10px 14px;
+    background: #0d0d0d;
+    border-radius: 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.78em;
+    line-height: 1.7;
+  }
+  .g { color: #1db954; }
+  .t { color: #80cbc4; }
+  .d { color: #555; }
+  .w { color: #e0e0e0; }
+  .y { color: #ffd54f; }
+  .tag {
+    display: inline-block;
+    font-size: 0.7em;
+    padding: 2px 8px;
+    border-radius: 20px;
+    margin-left: 8px;
+    vertical-align: middle;
+    font-weight: 600;
+  }
+  .tag-easy { background: #1a2e1f; color: #1db954; border: 1px solid #1db954; }
+  .tag-fun { background: #1a2030; color: #80cbc4; border: 1px solid #80cbc4; }
+  .tag-power { background: #2e1f2a; color: #f48fb1; border: 1px solid #f48fb1; }
+</style>
+
+<h2>How should DJ Rara feel to use?</h2>
+<p class="subtitle">The interaction model shapes the whole experience</p>
+
+<div class="opts">
+  <div class="opt" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="opt-body">
+      <h3>Guided Wizard <span class="tag tag-easy">low friction</span></h3>
+      <p>Run <code>python main.py</code> and the CLI walks you through a series of gentle prompts — mood, genre vibes, how many tracks. No flags to memorize.</p>
+      <div class="terminal-preview">
+        <span class="t">~ dj rara ~</span><br>
+        <span class="d">────────────────</span><br>
+        <span class="w">how are you feeling today?</span><br>
+        <span class="d">  [1] energetic  [2] chill  [3] focus  [4] melancholy</span><br>
+        <span class="t">> </span><span class="g">2</span><br><br>
+        <span class="w">how many tracks?</span> <span class="d">(default 30)</span><br>
+        <span class="t">> </span><span class="g">_</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="opt" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="opt-body">
+      <h3>Live TUI Dashboard <span class="tag tag-fun">most fun</span></h3>
+      <p>A full-screen interactive terminal UI (using <code>rich</code>). Browse recommendations live, toggle filters, preview tracks, confirm before creating playlist.</p>
+      <div class="terminal-preview">
+        <span class="t">╭─ dj rara ─────────────────────────────────╮</span><br>
+        <span class="t">│</span> <span class="g">♫  Discovering for azhou</span>  <span class="d">┊ 42 tracks</span>  <span class="t">│</span><br>
+        <span class="t">├───────────────────────────────────────────┤</span><br>
+        <span class="t">│</span> <span class="g">▶</span> <span class="w">Neon Moon — Brooks & Dunn</span>  <span class="d">♥ 84</span>       <span class="t">│</span><br>
+        <span class="t">│</span>   <span class="w">Take It Easy — Eagles</span>      <span class="d">♥ 91</span>       <span class="t">│</span><br>
+        <span class="t">│</span>   <span class="w">Skinny Love — Bon Iver</span>      <span class="d">♥ 79</span>       <span class="t">│</span><br>
+        <span class="t">╰───────────────────────────────────────────╯</span><br>
+        <span class="d">  [↑↓] navigate  [space] toggle  [p] playlist  [q] quit</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="opt" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="opt-body">
+      <h3>Flags + Beautiful Output <span class="tag tag-power">power user</span></h3>
+      <p>Familiar CLI flags like the current tool, but output is completely redesigned — rich progress bars, formatted track cards, animated spinners, color-coded results.</p>
+      <div class="terminal-preview">
+        <span class="t">~ dj rara ~</span>  <span class="d">brewing 30 tracks · mood: chill</span><br>
+        <span class="d">────────────────────────────────────</span><br>
+        <span class="g">⠋</span> <span class="d">fetching your artists...</span><br><br>
+        <span class="g">01.</span> <span class="w">Skinny Love</span>  <span class="d">·</span>  <span class="t">Bon Iver</span><br>
+        <span class="g">02.</span> <span class="w">Holocene</span>      <span class="d">·</span>  <span class="t">Bon Iver</span><br>
+        <span class="g">03.</span> <span class="w">Re: Stacks</span>    <span class="d">·</span>  <span class="t">Bon Iver</span>
+      </div>
+    </div>
+  </div>
+</div>

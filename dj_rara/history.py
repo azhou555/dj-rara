@@ -2,7 +2,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from models import Playlist
+from .models import Playlist
 
 HISTORY_PATH = Path.home() / ".dj-rara.json"
 

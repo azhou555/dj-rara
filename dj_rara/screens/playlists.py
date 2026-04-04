@@ -7,7 +7,7 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, ListItem, ListView, Static
 
-from history import get_playlists
+from ..history import get_playlists
 
 
 class PlaylistManagerScreen(Screen):
@@ -28,45 +28,45 @@ class PlaylistManagerScreen(Screen):
     #header {
         height: 3;
         padding: 0 2;
-        background: #111111;
-        border-bottom: solid #222222;
+        background: $surface;
+        border-bottom: solid $subtle-border;
         content-align: left middle;
     }
 
     ListView {
         height: 1fr;
-        background: #0d0d0d;
+        background: $background;
     }
 
     ListItem {
         padding: 0 2;
         height: 4;
-        border-bottom: solid #1a1a1a;
+        border-bottom: solid $panel;
     }
 
     ListItem.--highlight {
-        background: #1a2e1f;
+        background: $chip-active-bg;
     }
 
     #detail-panel {
         height: 7;
         padding: 1 3;
-        background: #111111;
-        border-top: solid #222222;
+        background: $surface;
+        border-top: solid $subtle-border;
     }
 
     #detail-name {
-        color: #80cbc4;
+        color: $accent;
         text-style: bold;
     }
 
     #detail-meta {
-        color: #555555;
+        color: $muted;
         margin-top: 0;
     }
 
     #empty-msg {
-        color: #444444;
+        color: $dim;
         padding: 2 2;
     }
     """
@@ -100,9 +100,9 @@ class PlaylistManagerScreen(Screen):
                         "track_count": pl.track_count, "created_at": pl.created_at,
                         "mood": "", "genres": [],
                     })
-            self.call_from_thread(self._render, merged)
+            self.app.call_from_thread(lambda pl=merged: self._render(pl))
         except Exception as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 lambda: self.notify(f"♪ could not load playlists: {e}", severity="error")
             )
 

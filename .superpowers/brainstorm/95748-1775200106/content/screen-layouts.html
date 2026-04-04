@@ -1,0 +1,199 @@
+<style>
+  .screens-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 24px;
+  }
+  .screen-mock {
+    background: #0a0a0a;
+    border: 1.5px solid #2a2a2a;
+    border-radius: 10px;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    font-size: 0.75em;
+  }
+  .screen-title-bar {
+    background: #141414;
+    border-bottom: 1px solid #222;
+    padding: 6px 12px;
+    font-size: 0.85em;
+    color: #1db954;
+    letter-spacing: 0.05em;
+  }
+  .screen-body {
+    padding: 12px 14px;
+    line-height: 1.7;
+  }
+  .g { color: #1db954; }
+  .t { color: #80cbc4; }
+  .d { color: #444; }
+  .w { color: #ccc; }
+  .y { color: #ffd54f; }
+  .p { color: #ce93d8; }
+  .r { color: #ef9a9a; }
+  .dim { color: #333; }
+
+  .chip {
+    display: inline-block;
+    border: 1px solid #1db954;
+    border-radius: 20px;
+    padding: 1px 7px;
+    color: #1db954;
+    font-size: 0.9em;
+    margin-right: 4px;
+  }
+  .chip-off {
+    display: inline-block;
+    border: 1px solid #333;
+    border-radius: 20px;
+    padding: 1px 7px;
+    color: #444;
+    font-size: 0.9em;
+    margin-right: 4px;
+  }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+  .bar-label { color: #888; min-width: 80px; font-size: 0.9em; }
+  .bar-fill { height: 8px; background: #1db954; border-radius: 4px; }
+  .bar-fill-t { height: 8px; background: #80cbc4; border-radius: 4px; }
+  .bar-pct { color: #555; font-size: 0.85em; }
+
+  .keybindings {
+    border-top: 1px solid #1a1a1a;
+    padding: 6px 14px;
+    background: #0d0d0d;
+    color: #444;
+    font-size: 0.72em;
+    letter-spacing: 0.02em;
+  }
+  .kb { color: #80cbc4; }
+
+  .track-row { padding: 2px 0; }
+  .track-selected { color: #1db954; }
+  .track-skipped { color: #333; text-decoration: line-through; }
+  .track-normal { color: #aaa; }
+</style>
+
+<h2>Screen Layouts</h2>
+<p class="subtitle">Mockups of all four screens — does the layout and information hierarchy feel right?</p>
+
+<div class="screens-grid">
+
+  <!-- Mood Screen -->
+  <div class="screen-mock">
+    <div class="screen-title-bar">🌙 discover  ·  dj rara</div>
+    <div class="screen-body">
+      <span class="t">~ what's the vibe today? ~</span><br>
+      <br>
+      <span class="d">mood ──────────────────</span><br>
+      <span class="chip">◉ chill</span>
+      <span class="chip-off">energetic</span>
+      <span class="chip-off">focus</span>
+      <span class="chip-off">melancholy</span><br>
+      <br>
+      <span class="d">genre ─────────────────</span><br>
+      <span class="chip">◉ indie</span>
+      <span class="chip">◉ folk</span>
+      <span class="chip-off">hip-hop</span>
+      <span class="chip-off">electronic</span><br>
+      <span class="chip-off">pop</span>
+      <span class="chip-off">jazz</span>
+      <span class="chip-off">rock</span><br>
+      <br>
+      <span class="d">time range ────────────</span><br>
+      <span class="chip-off">last 4 weeks</span>
+      <span class="chip">◉ 6 months</span>
+      <span class="chip-off">all time</span><br>
+      <br>
+      <span class="d">how many tracks? ──────</span><br>
+      &nbsp;&nbsp;<span class="w">30</span> <span class="d">───────────────── [+] [-]</span><br>
+      <br>
+      <span class="g">  [ ♫  discover  ]</span><br>
+    </div>
+    <div class="keybindings">
+      <span class="kb">tab</span> next field &nbsp;
+      <span class="kb">enter</span> discover &nbsp;
+      <span class="kb">s</span> stats &nbsp;
+      <span class="kb">p</span> playlists
+    </div>
+  </div>
+
+  <!-- Recommendations Screen -->
+  <div class="screen-mock">
+    <div class="screen-title-bar">🎵 recommendations  ·  30 tracks  ·  chill · indie</div>
+    <div class="screen-body">
+      <span class="d">  #   track                    artist           ♥</span><br>
+      <span class="d">  ─────────────────────────────────────────────</span><br>
+      <span class="track-selected">▶ 01  Skinny Love              Bon Iver        91</span><br>
+      <span class="track-normal">&nbsp; 02  Holocene                Bon Iver        88</span><br>
+      <span class="track-skipped">&nbsp; 03  Flume                   Bon Iver        76</span><br>
+      <span class="track-normal">&nbsp; 04  Re: Stacks              Bon Iver        82</span><br>
+      <span class="track-selected">&nbsp; 05  Lua                     Bright Eyes     79</span><br>
+      <span class="track-normal">&nbsp; 06  First Day of My Life    Bright Eyes     85</span><br>
+      <span class="track-normal">&nbsp; 07  Landlocked Blues        Bright Eyes     77</span><br>
+      <span class="track-normal">&nbsp; 08  Casimir Pulaski Day     Sufjan Stevens  83</span><br>
+      <span class="d">  ─────────────────────────────────────────────</span><br>
+      <span class="g">  kept: 2</span> &nbsp; <span class="r">skipped: 1</span> &nbsp; <span class="d">remaining: 27</span><br>
+    </div>
+    <div class="keybindings">
+      <span class="kb">↑↓</span> navigate &nbsp;
+      <span class="kb">space</span> keep/skip &nbsp;
+      <span class="kb">o</span> preview &nbsp;
+      <span class="kb">c</span> create playlist &nbsp;
+      <span class="kb">esc</span> back
+    </div>
+  </div>
+
+  <!-- Stats Screen -->
+  <div class="screen-mock">
+    <div class="screen-title-bar">📊 music dna  ·  azhou</div>
+    <div class="screen-body">
+      <span class="t">top genres</span><br>
+      <div class="bar-row"><span class="bar-label">indie folk</span><div class="bar-fill" style="width:90px"></div><span class="bar-pct">38%</span></div>
+      <div class="bar-row"><span class="bar-label">indie pop</span><div class="bar-fill" style="width:62px"></div><span class="bar-pct">26%</span></div>
+      <div class="bar-row"><span class="bar-label">chamber pop</span><div class="bar-fill" style="width:38px"></div><span class="bar-pct">16%</span></div>
+      <div class="bar-row"><span class="bar-label">folk rock</span><div class="bar-fill" style="width:24px"></div><span class="bar-pct">10%</span></div>
+      <br>
+      <span class="t">audio features</span><br>
+      <div class="bar-row"><span class="bar-label">energy</span><div class="bar-fill-t" style="width:44px"></div><span class="bar-pct">0.44</span></div>
+      <div class="bar-row"><span class="bar-label">valence</span><div class="bar-fill-t" style="width:58px"></div><span class="bar-pct">0.58</span></div>
+      <div class="bar-row"><span class="bar-label">danceable</span><div class="bar-fill-t" style="width:36px"></div><span class="bar-pct">0.36</span></div>
+      <div class="bar-row"><span class="bar-label">acoustics</span><div class="bar-fill-t" style="width:76px"></div><span class="bar-pct">0.76</span></div>
+      <br>
+      <span class="t">top artists</span> <span class="d">(6 months)</span><br>
+      <span class="g">1.</span> <span class="w">Bon Iver</span> &nbsp; <span class="g">2.</span> <span class="w">Bright Eyes</span> &nbsp; <span class="g">3.</span> <span class="w">Sufjan Stevens</span>
+    </div>
+    <div class="keybindings">
+      <span class="kb">r</span> recommendations &nbsp;
+      <span class="kb">p</span> playlists &nbsp;
+      <span class="kb">t</span> toggle time range
+    </div>
+  </div>
+
+  <!-- Playlist Manager Screen -->
+  <div class="screen-mock">
+    <div class="screen-title-bar">📋 playlists  ·  dj rara</div>
+    <div class="screen-body">
+      <span class="d">  your dj rara playlists</span><br>
+      <span class="d">  ────────────────────────────────────────────</span><br>
+      <span class="g">▶ DJ Rara — chill · indie</span> <span class="d">· 2026-04-03 · 28 tracks</span><br>
+      <span class="w">&nbsp; DJ Rara — focus · all genres</span> <span class="d">· 2026-03-28 · 30 tracks</span><br>
+      <span class="w">&nbsp; DJ Rara — energetic · hip-hop</span> <span class="d">· 2026-03-15 · 25 tracks</span><br>
+      <span class="w">&nbsp; DJ Rara Recommendations</span> <span class="d">· 2026-03-01 · 50 tracks</span><br>
+      <br>
+      <span class="d">  ────────────────────────────────────────────</span><br>
+      <span class="t">  ♫ DJ Rara — chill · indie</span><br>
+      <span class="d">  28 tracks · created 2026-04-03</span><br>
+      <span class="d">  moods: chill · genres: indie, folk</span><br>
+      <br>
+      <span class="g">  [ open in spotify ]</span>
+    </div>
+    <div class="keybindings">
+      <span class="kb">↑↓</span> navigate &nbsp;
+      <span class="kb">enter</span> open in spotify &nbsp;
+      <span class="kb">r</span> recommendations &nbsp;
+      <span class="kb">s</span> stats
+    </div>
+  </div>
+
+</div>
