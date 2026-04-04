@@ -1,0 +1,102 @@
+import random
+import time
+from datetime import date
+
+import spotipy
+
+from history import get_seen_track_ids
+from models import Artist, Playlist, Track
+
+MOOD_FEATURES: dict[str, dict[str, float]] = {
+    "chill":      {"target_energy": 0.30, "target_valence": 0.60,
+                   "target_tempo": 90.0,  "target_acousticness": 0.70},
+    "energetic":  {"target_energy": 0.85, "target_valence": 0.75,
+                   "target_tempo": 140.0, "target_acousticness": 0.10},
+    "focus":      {"target_energy": 0.50, "target_valence": 0.40,
+                   "target_tempo": 110.0, "target_acousticness": 0.50},
+    "melancholy": {"target_energy": 0.25, "target_valence": 0.20,
+                   "target_tempo": 80.0,  "target_acousticness": 0.60},
+}
+
+
+def mood_to_features(mood: str) -> dict[str, float]:
+    if mood not in MOOD_FEATURES:
+        raise ValueError(f"Unknown mood: {mood!r}. Choose from {list(MOOD_FEATURES)}")
+    return MOOD_FEATURES[mood].copy()
+
+
+def _parse_track(raw: dict) -> Track:
+    return Track(
+        id=raw["id"],
+        name=raw["name"],
+        artists=[a["name"] for a in raw["artists"]],
+        album=raw["album"]["name"],
+        popularity=raw["popularity"],
+        preview_url=raw.get("preview_url"),
+        uri=raw["uri"],
+    )
+
+
+def _parse_artist(raw: dict) -> Artist:
+    return Artist(
+        id=raw["id"],
+        name=raw["name"],
+        genres=raw.get("genres", []),
+        popularity=raw.get("popularity", 0),
+    )
+
+
+def _call_with_retry(fn, max_retries: int = 3):
+    """Call fn(), retrying on HTTP 429 rate limit with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except spotipy.exceptions.SpotifyException as e:
+            if e.http_status == 429 and attempt < max_retries - 1:
+                wait = int(e.headers.get("Retry-After", 2 ** attempt))
+                time.sleep(wait)
+            else:
+                raise
+        except Exception:
+            raise
+
+
+class SpotifyClient:
+    def __init__(self, sp):
+        self.sp = sp
+        self.user_id: str = sp.current_user()["id"]
+
+    def get_top_tracks(self, time_range: str = "medium_term", limit: int = 50) -> list[Track]:
+        results = _call_with_retry(
+            lambda: self.sp.current_user_top_tracks(
+                limit=min(limit, 50), offset=0, time_range=time_range
+            )
+        )
+        return [_parse_track(t) for t in results["items"]][:limit]
+
+    def get_top_artists(self, time_range: str = "medium_term", limit: int = 50) -> list[Artist]:
+        results = _call_with_retry(
+            lambda: self.sp.current_user_top_artists(
+                limit=min(limit, 50), offset=0, time_range=time_range
+            )
+        )
+        return [_parse_artist(a) for a in results["items"]][:limit]
+
+    def get_followed_artists(self, limit: int = 50) -> list[Artist]:
+        artists: list[Artist] = []
+        results = _call_with_retry(
+            lambda: self.sp.current_user_followed_artists(limit=min(limit, 50))
+        )
+        while results and len(artists) < limit:
+            artists.extend([_parse_artist(a) for a in results["artists"]["items"]])
+            if results["artists"]["next"] and len(artists) < limit:
+                results = _call_with_retry(lambda: self.sp.next(results["artists"]))
+            else:
+                break
+        return artists[:limit]
+
+    def get_audio_features(self, track_ids: list[str]) -> dict[str, dict]:
+        if not track_ids:
+            return {}
+        raw = _call_with_retry(lambda: self.sp.audio_features(track_ids))
+        return {f["id"]: f for f in raw if f is not None}
