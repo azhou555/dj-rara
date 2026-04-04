@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from models import Track, Artist
+from models import Track, Artist, Playlist
 
 
 @pytest.fixture
@@ -108,3 +108,130 @@ class TestGetAudioFeatures:
         features = client.get_audio_features([])
         assert features == {}
         mock_sp.audio_features.assert_not_called()
+
+
+class TestMoodToFeatures:
+    def test_chill(self):
+        from spotify_client import mood_to_features
+        f = mood_to_features("chill")
+        assert f["target_energy"] == pytest.approx(0.30)
+        assert f["target_valence"] == pytest.approx(0.60)
+        assert f["target_acousticness"] == pytest.approx(0.70)
+
+    def test_energetic(self):
+        from spotify_client import mood_to_features
+        assert mood_to_features("energetic")["target_energy"] == pytest.approx(0.85)
+
+    def test_focus(self):
+        from spotify_client import mood_to_features
+        assert mood_to_features("focus")["target_energy"] == pytest.approx(0.50)
+
+    def test_melancholy(self):
+        from spotify_client import mood_to_features
+        assert mood_to_features("melancholy")["target_energy"] == pytest.approx(0.25)
+
+    def test_unknown_mood_raises(self):
+        from spotify_client import mood_to_features
+        with pytest.raises(ValueError, match="Unknown mood"):
+            mood_to_features("groovy")
+
+
+class TestGetRecommendations:
+    def test_returns_track_objects(self, client, mock_sp):
+        mock_sp.recommendations.return_value = {"tracks": [_raw_track(id="r1")]}
+        tracks = client.get_recommendations(
+            seed_artist_ids=["a1", "a2"],
+            seed_track_ids=["t1"],
+            mood="chill",
+            genres=[],
+            limit=10,
+        )
+        assert len(tracks) >= 1
+        assert isinstance(tracks[0], Track)
+
+    def test_passes_mood_audio_features(self, client, mock_sp):
+        mock_sp.recommendations.return_value = {"tracks": [_raw_track()]}
+        client.get_recommendations(
+            seed_artist_ids=["a1"], seed_track_ids=[],
+            mood="chill", genres=[], limit=5,
+        )
+        kwargs = mock_sp.recommendations.call_args[1]
+        assert kwargs["target_energy"] == pytest.approx(0.30)
+        assert kwargs["target_valence"] == pytest.approx(0.60)
+
+    def test_includes_genre_seeds_when_provided(self, client, mock_sp):
+        mock_sp.recommendations.return_value = {"tracks": [_raw_track()]}
+        client.get_recommendations(
+            seed_artist_ids=["a1", "a2"], seed_track_ids=[],
+            mood="chill", genres=["indie folk"], limit=5,
+        )
+        kwargs = mock_sp.recommendations.call_args[1]
+        assert "seed_genres" in kwargs
+        assert "indie folk" in kwargs["seed_genres"]
+
+    def test_deduplicates_results(self, client, mock_sp):
+        dup = _raw_track(id="dup")
+        mock_sp.recommendations.return_value = {"tracks": [dup, dup]}
+        tracks = client.get_recommendations(
+            seed_artist_ids=["a1"], seed_track_ids=[],
+            mood="chill", genres=[], limit=10,
+        )
+        ids = [t.id for t in tracks]
+        assert len(ids) == len(set(ids))
+
+
+class TestCreatePlaylist:
+    def test_returns_playlist_object(self, client, mock_sp):
+        mock_sp.user_playlist_create.return_value = {
+            "id": "p1", "name": "DJ Rara — chill",
+            "external_urls": {"spotify": "https://open.spotify.com/playlist/p1"},
+        }
+        tracks = [Track("t1", "Song", ["Artist"], "Album", 80, None, "spotify:track:t1")]
+        playlist = client.create_playlist(
+            name="DJ Rara — chill", tracks=tracks,
+            description="test", mood="chill", genres=["indie"],
+        )
+        assert isinstance(playlist, Playlist)
+        assert playlist.id == "p1"
+        assert playlist.mood == "chill"
+        assert playlist.genres == ["indie"]
+
+    def test_adds_tracks_to_playlist(self, client, mock_sp):
+        mock_sp.user_playlist_create.return_value = {
+            "id": "p1", "name": "Test",
+            "external_urls": {"spotify": "https://example.com"},
+        }
+        tracks = [
+            Track(f"t{i}", "Song", ["Artist"], "Album", 80, None, f"spotify:track:t{i}")
+            for i in range(3)
+        ]
+        client.create_playlist("Test", tracks, "desc", "chill", [])
+        mock_sp.playlist_add_items.assert_called_once_with(
+            "p1", [f"spotify:track:t{i}" for i in range(3)]
+        )
+
+
+class TestGetUserPlaylists:
+    def test_filters_by_prefix(self, client, mock_sp):
+        mock_sp.current_user_playlists.return_value = {
+            "items": [
+                {"id": "p1", "name": "DJ Rara — chill", "tracks": {"total": 28},
+                 "external_urls": {"spotify": "https://open.spotify.com/playlist/p1"}},
+                {"id": "p2", "name": "My Morning Mix", "tracks": {"total": 10},
+                 "external_urls": {"spotify": "https://example.com"}},
+            ],
+            "next": None,
+        }
+        playlists = client.get_user_playlists(name_prefix="DJ Rara")
+        assert len(playlists) == 1
+        assert playlists[0].id == "p1"
+
+    def test_returns_empty_when_none_match(self, client, mock_sp):
+        mock_sp.current_user_playlists.return_value = {
+            "items": [
+                {"id": "p1", "name": "Some Other Playlist", "tracks": {"total": 5},
+                 "external_urls": {"spotify": "https://example.com"}},
+            ],
+            "next": None,
+        }
+        assert client.get_user_playlists(name_prefix="DJ Rara") == []
