@@ -13,7 +13,7 @@ pip install dj-rara
 ## Spotify Setup (one time)
 
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and create a free app
-2. In the app settings, add `http://localhost:8888/callback` as a Redirect URI and save(May need to use 'http://127.0.0.1:8888/callback' instead)
+2. In the app settings, add `http://localhost:8888/callback` as a Redirect URI and save(May need to use `http://127.0.0.1:8888/callback` instead)
 3. Note your **Client ID** and **Client Secret**
 
 On first run, DJ Rara will open a setup screen where you paste these in. After that, a browser window opens for Spotify login — authorize it and you're done. Credentials are saved locally in `.env`.
