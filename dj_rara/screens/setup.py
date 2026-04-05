@@ -1,13 +1,31 @@
+import subprocess
+import sys
+import webbrowser
 from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Label, Static
 
 
 ENV_PATH = Path.cwd() / ".env"
+REDIRECT_URI = "http://127.0.0.1:8888/callback"
+SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        elif sys.platform == "win32":
+            subprocess.run(["clip"], input=text.encode(), check=True)
+        else:
+            subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
+        return True
+    except Exception:
+        return False
 
 
 class SetupScreen(Screen):
@@ -37,7 +55,17 @@ class SetupScreen(Screen):
 
     #setup-subtitle {
         color: $muted;
+        margin-bottom: 0;
+    }
+
+    #dashboard-link {
+        color: $primary;
+        text-style: underline;
         margin-bottom: 1;
+    }
+
+    #dashboard-link:hover {
+        color: $accent;
     }
 
     .field-label {
@@ -56,9 +84,35 @@ class SetupScreen(Screen):
         border: solid $primary;
     }
 
-    #redirect-hint {
-        color: $dim;
+    #redirect-row {
         margin-top: 1;
+        height: 3;
+        align: left middle;
+    }
+
+    #redirect-uri {
+        color: $dim;
+        width: 1fr;
+        content-align: left middle;
+        height: 3;
+        padding: 0 1;
+        background: $panel;
+        border: solid $subtle-border;
+    }
+
+    #copy-btn {
+        width: auto;
+        min-width: 10;
+        height: 3;
+        margin-left: 1;
+        background: $panel;
+        border: solid $subtle-border;
+        color: $muted;
+    }
+
+    #copy-btn:hover {
+        border: solid $foreground-muted;
+        color: $foreground;
     }
 
     #save-btn {
@@ -78,18 +132,19 @@ class SetupScreen(Screen):
         with Vertical(id="setup-container"):
             yield Static("~ dj rara setup ~", id="setup-title")
             yield Static(
-                "Create a free Spotify app at developer.spotify.com/dashboard\n"
-                "then paste your credentials below.",
+                "Create a free Spotify app at:",
                 id="setup-subtitle",
             )
+            yield Static("  developer.spotify.com/dashboard ↗", id="dashboard-link")
+            yield Static("then paste your credentials below.", classes="field-label")
             yield Label("Client ID", classes="field-label")
             yield Input(placeholder="paste your client id", id="client-id-input", password=False)
             yield Label("Client Secret", classes="field-label")
             yield Input(placeholder="paste your client secret", id="client-secret-input", password=True)
-            yield Static(
-                "Redirect URI: add  http://localhost:8888/callback  to your Spotify app",
-                id="redirect-hint",
-            )
+            yield Label("Add this Redirect URI to your Spotify app:", classes="field-label")
+            with Horizontal(id="redirect-row"):
+                yield Static(REDIRECT_URI, id="redirect-uri")
+                yield Button("copy", id="copy-btn")
             yield Button("♫  save & continue", id="save-btn", classes="primary")
             yield Static("", id="status-msg")
         yield Footer()
@@ -97,6 +152,19 @@ class SetupScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save-btn":
             self._save_credentials()
+        elif event.button.id == "copy-btn":
+            self._copy_redirect_uri()
+
+    def on_static_click(self, event: Static.Clicked) -> None:
+        if event.static.id == "dashboard-link":
+            webbrowser.open(SPOTIFY_DASHBOARD_URL)
+
+    def _copy_redirect_uri(self) -> None:
+        msg = self.query_one("#status-msg", Static)
+        if _copy_to_clipboard(REDIRECT_URI):
+            msg.update("♪ copied to clipboard")
+        else:
+            msg.update(f"♪ copy manually: {REDIRECT_URI}")
 
     def _save_credentials(self) -> None:
         client_id = self.query_one("#client-id-input", Input).value.strip()
@@ -110,7 +178,7 @@ class SetupScreen(Screen):
         env_content = (
             f"SPOTIFY_CLIENT_ID={client_id}\n"
             f"SPOTIFY_CLIENT_SECRET={client_secret}\n"
-            f"SPOTIFY_REDIRECT_URI=http://localhost:8888/callback\n"
+            f"SPOTIFY_REDIRECT_URI={REDIRECT_URI}\n"
         )
         try:
             ENV_PATH.write_text(env_content)
@@ -120,7 +188,6 @@ class SetupScreen(Screen):
             msg.update(f"♪ could not write .env: {e}")
 
     def _launch_app(self) -> None:
-        import os
         from dotenv import load_dotenv
         load_dotenv(ENV_PATH, override=True)
 
