@@ -6,14 +6,26 @@ A lo-fi Spotify recommendation TUI. Mood-based discovery, track curation, playli
 
 ## Install
 
+**macOS / Linux**
 ```bash
 pip install dj-rara
+```
+
+**Windows** (recommended)
+```powershell
+pip install pipx
+pipx install dj-rara
+```
+
+`pipx` isolates the app and handles upgrades more cleanly on Windows. To upgrade later:
+```powershell
+pipx upgrade dj-rara
 ```
 
 ## Spotify Setup (one time)
 
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and create a free app
-2. In the app settings, add `http://localhost:8888/callback` as a Redirect URI and save(May need to use `http://127.0.0.1:8888/callback` instead)
+2. In the app settings, add `http://127.0.0.1:8888/callback` as a Redirect URI and save
 3. Note your **Client ID** and **Client Secret**
 
 On first run, DJ Rara will open a setup screen where you paste these in. After that, a browser window opens for Spotify login — authorize it and you're done. Credentials are saved locally in `.env`.
@@ -50,7 +62,7 @@ Browse and curate the generated tracks before saving.
 |---|---|
 | `↑ ↓` | navigate tracks |
 | `space` | toggle keep (green) / skip (strikethrough) |
-| `o` | preview track — plays 30s audio in terminal via iTunes, or opens Spotify if unavailable. Press again to stop |
+| `o` | preview track — plays 30s clip via default media player. Press again to stop (macOS/Linux only) |
 | `c` | create playlist from kept tracks (falls back to all tracks if none kept) |
 | `s` | go to Stats |
 | `esc` | back to Mood |
@@ -103,7 +115,7 @@ Tracks you've already curated into a DJ Rara playlist are filtered out automatic
 ## Troubleshooting
 
 **Auth failed / redirect URI mismatch**
-Make sure `http://localhost:8888/callback` is added exactly as shown in your Spotify app's Redirect URIs settings.
+Make sure `http://127.0.0.1:8888/callback` is added exactly as shown in your Spotify app's Redirect URIs settings.
 
 **Try deleting `.cache`** if authentication gets stuck and re-run.
 
@@ -111,7 +123,10 @@ Make sure `http://localhost:8888/callback` is added exactly as shown in your Spo
 Try setting vibe to **new** and clearing genre selections — a very specific genre + familiar setting can sometimes return an empty pool.
 
 **Preview not playing**
-`afplay` is used for terminal audio on macOS. On other platforms the track opens in Spotify instead.
+On macOS, `afplay` is used for terminal audio. On Linux, `cvlc` (VLC) is used if available. On Windows, the clip opens in your default media player.
+
+**Windows upgrade issues (`.deleteme` files)**
+Make sure DJ Rara is fully closed before upgrading. If you see errors about files in use, delete any `*.deleteme` files in `venv\Scripts\` then retry. Using `pipx` instead of a manual venv avoids this entirely.
 
 ## Requirements
 
