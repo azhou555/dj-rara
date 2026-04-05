@@ -32,7 +32,7 @@ load_dotenv(env_path)
 
 client_id = os.getenv("SPOTIFY_CLIENT_ID")
 client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
-redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "http://localhost:8888/callback")
+redirect_uri = "http://127.0.0.1:8888/callback"
 
 print("=" * 60)
 print("DJ Rara — Spotify Auth Smoke Test")
@@ -40,7 +40,7 @@ print("=" * 60)
 print(f"  .env path:     {env_path}")
 print(f"  Client ID:     {client_id or 'NOT SET'}")
 print(f"  Client Secret: {'*' * 16 + client_secret[-4:] if client_secret else 'NOT SET'}")
-print(f"  Redirect URI:  {redirect_uri}")
+print(f"  Redirect URI:  {redirect_uri}  (hardcoded)")
 print("=" * 60)
 
 if not client_id or not client_secret:

@@ -178,7 +178,6 @@ class SetupScreen(Screen):
         env_content = (
             f"SPOTIFY_CLIENT_ID={client_id}\n"
             f"SPOTIFY_CLIENT_SECRET={client_secret}\n"
-            f"SPOTIFY_REDIRECT_URI={REDIRECT_URI}\n"
         )
         try:
             ENV_PATH.write_text(env_content)
