@@ -70,7 +70,7 @@ class SetupScreen(Screen):
     #status-msg {
         color: $primary;
         margin-top: 1;
-        height: 1;
+        height: auto;
     }
     """
 
@@ -122,7 +122,7 @@ class SetupScreen(Screen):
     def _launch_app(self) -> None:
         import os
         from dotenv import load_dotenv
-        load_dotenv(override=True)
+        load_dotenv(ENV_PATH, override=True)
 
         from ..spotify_auth import SpotifyAuthenticator
 
