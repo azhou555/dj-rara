@@ -197,13 +197,39 @@ class RecommendationsScreen(Screen):
             # Stop any running preview first
             if self._preview_proc and self._preview_proc.poll() is None:
                 self._preview_proc.terminate()
-            # Download to temp file and play with afplay (no browser tab)
+
+            import sys
+            player = (
+                ["afplay"]
+                if sys.platform == "darwin"
+                else ["cvlc", "--play-and-exit"]
+                if sys.platform != "win32"
+                else None
+            )
+
+            if player is None:
+                # Windows: download and open with default media player
+                tmp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
+                        tmp_path = tmp.name
+                    urllib.request.urlretrieve(preview_url, tmp_path)
+                    os.startfile(tmp_path)
+                    self.app.call_from_thread(
+                        lambda n=track.name: self.query_one("#preview-msg", Static).update(f"♪ previewing: {n}")
+                    )
+                except Exception:
+                    self.app.call_from_thread(
+                        lambda: self.query_one("#preview-msg", Static).update("♪ preview failed")
+                    )
+                return
+
             tmp_path = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
                     tmp_path = tmp.name
                 urllib.request.urlretrieve(preview_url, tmp_path)
-                self._preview_proc = subprocess.Popen(["afplay", tmp_path])
+                self._preview_proc = subprocess.Popen(player + [tmp_path])
                 self.app.call_from_thread(
                     lambda n=track.name: self.query_one("#preview-msg", Static).update(f"♪ previewing: {n}  (o to stop)")
                 )
