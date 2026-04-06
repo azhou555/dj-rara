@@ -15,7 +15,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static
 from textual import work
 
-from ..history import add_playlist, add_seen_tracks
+from ..history import add_kept_tracks, add_playlist, add_seen_tracks, add_skipped_track_ids
 from ..models import Track
 
 
@@ -282,7 +282,31 @@ class RecommendationsScreen(Screen):
                 genres=self._genres,
             )
             add_playlist(playlist)
-            add_seen_tracks([t.id for t in tracks])
+
+            # Mark every shown track as seen so it won't resurface in future sessions.
+            add_seen_tracks([t.id for t in self._tracks])
+
+            # Persist explicit user feedback only when the user actually made
+            # keep/skip decisions (i.e. at least one track was toggled).
+            has_explicit = any(s != "default" for s in self._states.values())
+            if has_explicit:
+                explicitly_skipped = [
+                    t.id for t in self._tracks if self._states.get(t.id) == "skipped"
+                ]
+                if explicitly_skipped:
+                    add_skipped_track_ids(explicitly_skipped)
+
+                kept_ids = [t.id for t in tracks]
+                if kept_ids:
+                    features_map = self.app.client.get_audio_features(kept_ids)
+                    kept_entries = [
+                        {"id": tid, "mood": self._mood, "features": features_map[tid]}
+                        for tid in kept_ids
+                        if features_map.get(tid)
+                    ]
+                    if kept_entries:
+                        add_kept_tracks(kept_entries)
+
             self.app.call_from_thread(
                 lambda: self.notify(f"♪ playlist created — {name}", severity="information")
             )
