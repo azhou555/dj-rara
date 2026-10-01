@@ -193,13 +193,14 @@ class SetupScreen(Screen):
         from ..spotify_auth import SpotifyAuthenticator
 
         try:
+            from ..spotify_client import SpotifyClient
             sp = SpotifyAuthenticator().authenticate()
+            client = SpotifyClient(sp)
         except Exception as e:
             self.query_one("#status-msg", Static).update(f"♪ auth failed: {e}")
             return
 
-        from ..spotify_client import SpotifyClient
-        self.app.client = SpotifyClient(sp)
+        self.app.client = client
         self.app.pop_screen()
         from .mood import MoodScreen
         self.app.push_screen(MoodScreen())
