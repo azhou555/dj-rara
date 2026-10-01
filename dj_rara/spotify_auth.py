@@ -4,7 +4,10 @@ Handles OAuth 2.0 authentication flow for Spotify Web API
 """
 
 import os
+import sys
+from pathlib import Path
 import spotipy
+from spotipy.exceptions import SpotifyOauthError
 from spotipy.oauth2 import SpotifyOAuth
 from dotenv import load_dotenv
 
@@ -49,6 +52,20 @@ class SpotifyAuthenticator:
             scope=self.scope,
             cache_path=".cache"
         )
+
+        # Spotipy otherwise defers OAuth until the first API request, outside
+        # the startup authentication error handler.
+        try:
+            auth_manager.get_access_token(as_dict=False)
+        except SpotifyOauthError as error:
+            cache_path = Path(".cache")
+            if error.error != "invalid_grant" or not cache_path.is_file():
+                raise
+            # A revoked refresh token cannot be reused. Clear only the token
+            # cache and retry authorization once; retain app credentials.
+            cache_path.unlink()
+            print("♪ Spotify login expired or was revoked. Please sign in again.", file=sys.stderr)
+            auth_manager.get_access_token(as_dict=False)
 
         return spotipy.Spotify(auth_manager=auth_manager)
 

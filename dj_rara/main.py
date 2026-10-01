@@ -22,14 +22,15 @@ def main() -> None:
 
     try:
         from .spotify_auth import SpotifyAuthenticator
+        from .spotify_client import SpotifyClient
         sp = SpotifyAuthenticator().authenticate()
+        client = SpotifyClient(sp)
     except Exception as e:
         print(f"♪ authentication failed: {e}")
-        print("  Try deleting .cache and running again.")
+        print("  Check your Spotify credentials and connection, then try again.")
         sys.exit(1)
 
-    from .spotify_client import SpotifyClient
-    DJRaraApp(SpotifyClient(sp)).run()
+    DJRaraApp(client).run()
 
 
 if __name__ == "__main__":
