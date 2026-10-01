@@ -8,6 +8,7 @@ from textual.widgets import Button, Footer, Input, Label, Static
 from textual import work
 
 from ..spotify_client import GENRE_SYNONYMS
+from ..selection import RecommendationPool
 
 EXPLORE_GENRES = [
     "afrobeats", "ambient", "bossa nova", "cumbia", "dark ambient",
@@ -263,6 +264,7 @@ class MoodScreen(Screen):
                 )
             seed_track_ids = [t.id for t in top_tracks[:10]]
 
+            pool = RecommendationPool()
             tracks = client.get_recommendations(
                 seed_artist_ids=seed_artist_ids,
                 seed_track_ids=seed_track_ids,
@@ -270,15 +272,16 @@ class MoodScreen(Screen):
                 genres=genres,
                 limit=count,
                 discovery_ratio=discovery_ratio,
+                candidate_pool=pool,
             )
 
-            self.app.call_from_thread(lambda t=tracks, m=mood, g=genres: self._on_recommendations_ready(t, m, g))
+            self.app.call_from_thread(lambda: self._on_recommendations_ready(tracks, mood, genres, pool))
 
         except Exception as e:
             self.app.call_from_thread(lambda err=str(e): self._on_discovery_error(err))
 
     def _on_recommendations_ready(
-        self, tracks, mood: str, genres: list[str]
+        self, tracks, mood: str, genres: list[str], pool: RecommendationPool | None = None
     ) -> None:
         from .recommendations import RecommendationsScreen
 
@@ -290,7 +293,7 @@ class MoodScreen(Screen):
             self.notify("♪ no tracks found — try different settings", severity="warning")
             return
 
-        self.app.push_screen(RecommendationsScreen(tracks=tracks, mood=mood, genres=genres))
+        self.app.push_screen(RecommendationsScreen(tracks=tracks, mood=mood, genres=genres, pool=pool))
 
     def _on_discovery_error(self, message: str) -> None:
         self.notify(f"♪ something went wrong: {message}", severity="error")

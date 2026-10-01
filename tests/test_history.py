@@ -81,3 +81,21 @@ def test_add_seen_tracks_deduplicates():
 def test_get_playlists_empty():
     from dj_rara.history import get_playlists
     assert get_playlists() == []
+
+
+def test_skip_cooldown_expires_and_preserves_history(monkeypatch):
+    import dj_rara.history as history
+    monkeypatch.setattr(history.time, "time", lambda: 1000)
+    history.add_seen_tracks(["saved"])
+    history.set_track_skipped("skipped", True)
+    assert history.get_skipped_track_ids() == {"skipped"}
+    assert history.get_seen_track_ids() == {"saved"}
+    monkeypatch.setattr(history.time, "time", lambda: 1000 + 7 * 24 * 60 * 60)
+    assert history.get_skipped_track_ids() == set()
+
+
+def test_unskip_clears_cooldown():
+    from dj_rara.history import set_track_skipped, get_skipped_track_ids
+    set_track_skipped("t1", True)
+    set_track_skipped("t1", False)
+    assert get_skipped_track_ids() == set()

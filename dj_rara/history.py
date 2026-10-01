@@ -1,4 +1,5 @@
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -41,3 +42,22 @@ def get_seen_track_ids() -> set[str]:
 
 def get_playlists() -> list[dict]:
     return load_history()["playlists"]
+
+
+def set_track_skipped(track_id: str, skipped: bool) -> None:
+    history = load_history()
+    now = time.time()
+    cooldowns = {tid: expiry for tid, expiry in history.get("skipped_until", {}).items()
+                 if isinstance(expiry, (int, float)) and expiry > now}
+    if skipped:
+        cooldowns[track_id] = now + 7 * 24 * 60 * 60
+    else:
+        cooldowns.pop(track_id, None)
+    history["skipped_until"] = cooldowns
+    save_history(history)
+
+
+def get_skipped_track_ids() -> set[str]:
+    now = time.time()
+    return {tid for tid, expiry in load_history().get("skipped_until", {}).items()
+            if isinstance(expiry, (int, float)) and expiry > now}

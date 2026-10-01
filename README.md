@@ -62,10 +62,25 @@ Browse and curate the generated tracks before saving.
 |---|---|
 | `↑ ↓` | navigate tracks |
 | `space` | toggle keep (green) / skip (strikethrough) |
+| `k` / `x` | keep / skip the selected track |
+| `u` | undo the last keep/skip decision on a track still displayed |
+| `r` | replace skipped tracks from the remaining candidates |
+| `Shift+r` | replace all unkept tracks, preserving kept tracks |
 | `o` | preview track — plays 30s clip via default media player. Press again to stop (macOS/Linux only) |
-| `c` | create playlist from kept tracks (falls back to all tracks if none kept) |
+| `c` | create playlist from kept tracks, or undecided tracks if none are kept; skipped tracks are always excluded |
 | `s` | go to Stats |
 | `esc` | back to Mood |
+
+The create button shows the exact number of tracks to export. Skipped tracks are
+excluded from new discoveries for seven days; keeping a track or undoing its skip
+clears that cooldown. Replacements use already fetched candidates and never
+repeat a track shown in the same session. If the reserve runs out, unmatched rows
+stay in place.
+
+Recommendations include at most two tracks per artist and filter duplicate
+recordings. Results may be shorter than requested when there aren't enough
+distinct candidates. Missing audio measurements receive a neutral score, and
+ties are randomized before selection.
 
 ### Stats Screen — Music DNA
 Genre bars, audio profile, and top artists for your listening history.

@@ -16,10 +16,10 @@ def client(mock_sp):
     return SpotifyClient(mock_sp)
 
 
-def _raw_track(id="t1", name="Skinny Love", artist="Bon Iver", artist_id="a1",
+def _raw_track(id="t1", name=None, artist="Bon Iver", artist_id="a1",
                album="For Emma", popularity=91, preview_url="https://example.com/p.mp3"):
     return {
-        "id": id, "name": name,
+        "id": id, "name": name if name is not None else ("Skinny Love" if id == "t1" else id),
         "artists": [{"name": artist, "id": artist_id}],
         "album": {"name": album},
         "popularity": popularity,
@@ -566,3 +566,56 @@ class TestGetUserPlaylists:
             "next": None,
         }
         assert client.get_user_playlists(name_prefix="DJ Rara") == []
+
+
+class TestRankingFallback:
+    def test_missing_audio_is_neutral_not_worst(self, client, mock_sp, monkeypatch):
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[
+            _raw_track(id="poor"), _raw_track(id="unknown"), _raw_track(id="good"),
+        ])
+        monkeypatch.setattr("dj_rara.spotify_client.random.shuffle", lambda values: None)
+        mock_sp.audio_features.return_value = [
+            {"id": "poor", "energy": 1.0, "valence": 0.0, "acousticness": 0.0, "tempo": 200},
+            {"id": "good", "energy": 0.3, "valence": 0.6, "acousticness": 0.7, "tempo": 90},
+        ]
+        tracks = client.get_recommendations(["a1"], [], "chill", [], limit=2)
+        assert [t.id for t in tracks] == ["good", "unknown"]
+
+    def test_ties_are_randomized_before_selection(self, client, mock_sp, monkeypatch):
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[
+            _raw_track(id="first"), _raw_track(id="last"),
+        ])
+        monkeypatch.setattr("dj_rara.spotify_client.random.shuffle", lambda values: values.reverse())
+        tracks = client.get_recommendations(["a1"], [], "chill", [], limit=1)
+        assert tracks[0].id == "last"
+
+    def test_reserve_is_populated_and_skips_excluded(self, client, mock_sp, monkeypatch):
+        from dj_rara.selection import RecommendationPool
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[
+            _raw_track(id="skipped"), _raw_track(id="a"), _raw_track(id="b"),
+        ])
+        monkeypatch.setattr("dj_rara.spotify_client.get_skipped_track_ids", lambda: {"skipped"})
+        pool = RecommendationPool()
+        tracks = client.get_recommendations(["a1"], [], "chill", [], limit=1, candidate_pool=pool)
+        reserve = pool.take(10)
+        assert len(tracks) == len(reserve) == 1
+        assert {t.id for t in tracks + reserve} == {"a", "b"}
+
+    def test_playlist_duplicates_do_not_inflate_score(self, client, mock_sp):
+        mock_sp.search.return_value = {"playlists": {"items": [{"id": "p1"}]}}
+        mock_sp.playlist_tracks.return_value = {"items": [
+            {"track": _raw_track(id="a")}, {"track": _raw_track(id="a")},
+            {"track": _raw_track(id="b")},
+        ]}
+        _, scores = client._fetch_playlist_proxy_tracks("chill", [], set())
+        assert scores["a"] == scores["b"]
+
+    def test_proxy_ranks_when_audio_unavailable(self, client, mock_sp, monkeypatch):
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[_raw_track(id="plain")])
+        monkeypatch.setattr("dj_rara.spotify_client.random.shuffle", lambda values: None)
+        from dj_rara.spotify_client import _parse_track
+        client._fetch_playlist_proxy_tracks = MagicMock(return_value=(
+            [_parse_track(_raw_track(id="proxy"))], {"proxy": 1.0},
+        ))
+        tracks = client.get_recommendations(["a1"], [], "chill", [], limit=1, discovery_ratio=1)
+        assert tracks[0].id == "proxy"

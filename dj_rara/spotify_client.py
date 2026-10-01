@@ -4,8 +4,9 @@ from datetime import date
 
 import spotipy
 
-from .history import get_seen_track_ids
+from .history import get_seen_track_ids, get_skipped_track_ids
 from .models import Artist, Playlist, Track
+from .selection import RecommendationPool
 
 # Spotify's artist genre tags often don't use the exact genre label a user would
 # expect. This map expands each explore genre to the related Spotify tags it
@@ -58,14 +59,14 @@ def _expand_genres(genres: list[str]) -> set[str]:
     return expanded
 
 
-def _mood_score(features: dict | None, targets: dict[str, float]) -> float:
+def _mood_score(features: dict | None, targets: dict[str, float]) -> float | None:
     """Mean absolute deviation from mood audio feature targets.
 
-    Lower = closer match. Returns 1.0 (worst) for tracks with no feature data.
+    Lower = closer match. Returns None when no comparable measurements exist.
     Tempo is normalized to [0, 1] by dividing by 200 BPM before comparison.
     """
     if not features:
-        return 1.0
+        return None
     checks = [
         ("energy",       "target_energy",       1.0),
         ("valence",      "target_valence",       1.0),
@@ -74,10 +75,10 @@ def _mood_score(features: dict | None, targets: dict[str, float]) -> float:
     ]
     total, count = 0.0, 0
     for feature, target_key, scale in checks:
-        if target_key in targets and feature in features:
+        if target_key in targets and isinstance(features.get(feature), (int, float)):
             total += abs(features[feature] / scale - targets[target_key] / scale)
             count += 1
-    return total / count if count else 1.0
+    return total / count if count else None
 
 
 MOOD_FEATURES: dict[str, dict[str, float]] = {
@@ -113,6 +114,7 @@ def _parse_track(raw: dict) -> Track:
         preview_url=raw.get("preview_url"),
         uri=raw["uri"],
         artist_ids=[a["id"] for a in raw["artists"] if "id" in a],
+        isrc=(raw.get("external_ids") or {}).get("isrc"),
     )
 
 
@@ -233,13 +235,15 @@ class SpotifyClient:
                 raw = _call_with_retry(
                     lambda p=pid: self.sp.playlist_tracks(p, limit=50)
                 )
+                counted: set[str] = set()
                 for item in raw["items"]:
                     if not item or not item.get("track"):
                         continue
                     t = item["track"]
                     tid = t.get("id")
-                    if not tid or tid in seen_ids:
+                    if not tid or tid in seen_ids or tid in counted:
                         continue
+                    counted.add(tid)
                     cooc[tid] = cooc.get(tid, 0) + 1
                     if tid not in track_objects:
                         track_objects[tid] = _parse_track(t)
@@ -269,12 +273,13 @@ class SpotifyClient:
         genres: list[str],
         limit: int = 30,
         discovery_ratio: float = 0.5,
+        candidate_pool: RecommendationPool | None = None,
     ) -> list[Track]:
         # Spotify deprecated /recommendations for new apps in late 2024.
         # Strategy: split into "familiar" pool (artist tops + saved + user tops)
         # and "discovery" pool (search + related artists). discovery_ratio controls
         # the mix. Both pools are sorted by mood-feature proximity before selection.
-        seen_ids = get_seen_track_ids()
+        seen_ids = get_seen_track_ids() | get_skipped_track_ids()
         familiar: list[Track] = []
         discovery: list[Track] = []
         familiar_ids: set[str] = set()
@@ -447,22 +452,34 @@ class SpotifyClient:
         all_ids = [t.id for t in familiar] + [t.id for t in discovery]
         features_map = self.get_audio_features(all_ids) if mood_targets else {}
 
-        def _rank(t: Track) -> float:
-            mood_goodness = 1.0 - _mood_score(features_map.get(t.id), mood_targets)
-            return (1.0 - PROXY_BLEND_WEIGHT) * mood_goodness + PROXY_BLEND_WEIGHT * proxy_scores.get(t.id, 0.0)
+        mood_scores = {tid: _mood_score(features_map.get(tid), mood_targets) for tid in all_ids}
+        has_mood = any(score is not None for score in mood_scores.values())
+        has_proxy = any(tid in proxy_scores for tid in all_ids)
 
+        def _rank(t: Track) -> float:
+            score = mood_scores[t.id]
+            mood_goodness = max(0.0, 1.0 - score) if score is not None else 0.5
+            mood_weight = 1.0 - PROXY_BLEND_WEIGHT if has_mood else 0.0
+            proxy_weight = PROXY_BLEND_WEIGHT if has_proxy else 0.0
+            weight = mood_weight + proxy_weight
+            return ((mood_weight * mood_goodness + proxy_weight * proxy_scores.get(t.id, 0.0))
+                    / weight) if weight else 0.0
+
+        # Stable sorting now breaks ties randomly, rather than by fetch order.
+        random.shuffle(familiar)
+        random.shuffle(discovery)
         familiar.sort(key=_rank, reverse=True)
         discovery.sort(key=_rank, reverse=True)
 
         # Mix pools according to discovery_ratio (sorted order drives selection;
         # shuffle at the end handles presentation randomness)
-        n_discovery = int(limit * discovery_ratio)
-        n_familiar = limit - n_discovery
-        mixed = familiar[:n_familiar] + discovery[:n_discovery]
-        if len(mixed) < limit:
-            used = {t.id for t in mixed}
-            filler = [t for t in (discovery + familiar) if t.id not in used]
-            mixed += filler[:limit - len(mixed)]
+        pool = candidate_pool if candidate_pool is not None else RecommendationPool()
+        pool.familiar = familiar
+        pool.discovery = discovery
+        pool.discovery_ratio = discovery_ratio
+        pool.displayed_ids.clear()
+        pool.displayed_recordings.clear()
+        mixed = pool.take(limit)
         random.shuffle(mixed)
         return mixed[:limit]
 

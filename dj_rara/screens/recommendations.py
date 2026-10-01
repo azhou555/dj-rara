@@ -4,6 +4,7 @@ import os
 import urllib.parse
 import urllib.request
 import json
+import random
 import webbrowser
 from datetime import date
 
@@ -12,11 +13,12 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Static
+from textual.widgets import Button, DataTable, Footer, Static
 from textual import work
 
-from ..history import add_playlist, add_seen_tracks
+from ..history import add_playlist, add_seen_tracks, set_track_skipped
 from ..models import Track
+from ..selection import RecommendationPool, recording_keys
 
 
 def _itunes_preview(track: Track) -> str | None:
@@ -47,7 +49,12 @@ class RecommendationsScreen(Screen):
     """Browse and curate recommended tracks, then create a playlist."""
 
     BINDINGS = [
-        Binding("space", "toggle_track", "keep/skip", show=True),
+        Binding("space", "toggle_track", "keep/skip", show=False),
+        Binding("k", "keep_track", "keep", show=True),
+        Binding("x", "skip_track", "skip", show=True),
+        Binding("u", "undo", "undo", show=True),
+        Binding("r", "replace_skipped", "replace skipped", show=True),
+        Binding("R", "replace_unkept", "replace unkept", show=True),
         Binding("o", "open_preview", "preview", show=True),
         Binding("c", "create_playlist", "create playlist", show=True),
         Binding("s", "go_stats", "stats", show=False),
@@ -93,13 +100,20 @@ class RecommendationsScreen(Screen):
     }
     """
 
-    def __init__(self, tracks: list[Track], mood: str, genres: list[str]):
+    def __init__(self, tracks: list[Track], mood: str, genres: list[str],
+                 pool: RecommendationPool | None = None):
         super().__init__()
         self._tracks = tracks
         self._mood = mood
         self._genres = genres
         self._states: dict[str, str] = {t.id: "default" for t in tracks}
         self._preview_proc: subprocess.Popen | None = None
+        self._pool = pool or RecommendationPool()
+        self._pool.displayed_ids.update(t.id for t in tracks)
+        for track in tracks:
+            self._pool.displayed_recordings.update(recording_keys(track))
+        self._undo: list[tuple[str, str]] = []
+        self._creating = False
 
     def compose(self) -> ComposeResult:
         genre_str = " · ".join(self._genres) if self._genres else "all genres"
@@ -111,6 +125,7 @@ class RecommendationsScreen(Screen):
         yield DataTable(id="track-table", cursor_type="row", zebra_stripes=False)
         yield Static("", id="preview-msg")
         yield Static(self._status_text(), id="status-bar")
+        yield Button(self._export_label(), id="create-playlist")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -121,6 +136,7 @@ class RecommendationsScreen(Screen):
         table.add_column("♥", key="pop", width=4)
         for i, track in enumerate(self._tracks):
             table.add_row(*self._make_cells(track, i + 1), key=track.id)
+        self._refresh_status()
         table.focus()
 
     def _make_cells(self, track: Track, num: int) -> tuple:
@@ -142,7 +158,20 @@ class RecommendationsScreen(Screen):
         kept = sum(1 for s in self._states.values() if s == "kept")
         skipped = sum(1 for s in self._states.values() if s == "skipped")
         remaining = len(self._tracks) - kept - skipped
-        return f"kept: {kept}  ·  skipped: {skipped}  ·  remaining: {remaining}"
+        return f"kept: {kept}  ·  skipped: {skipped}  ·  undecided: {remaining}  ·  export: {len(self._export_tracks())}"
+
+    def _export_tracks(self) -> list[Track]:
+        kept = [t for t in self._tracks if self._states[t.id] == "kept"]
+        return kept or [t for t in self._tracks if self._states[t.id] == "default"]
+
+    def _export_label(self) -> str:
+        return "Creating playlist…" if self._creating else f"Create playlist · {len(self._export_tracks())} tracks"
+
+    def _refresh_status(self) -> None:
+        self.query_one("#status-bar", Static).update(self._status_text())
+        button = self.query_one("#create-playlist", Button)
+        button.label = self._export_label()
+        button.disabled = self._creating or not self._export_tracks()
 
     def _current_track(self) -> Track | None:
         table = self.query_one(DataTable)
@@ -164,14 +193,78 @@ class RecommendationsScreen(Screen):
         track = self._current_track()
         if not track:
             return
-        current = self._states[track.id]
-        self._states[track.id] = (
-            "skipped" if current == "kept"
-            else "kept" if current == "skipped"
-            else "kept"
-        )
+        self._set_state(track, "skipped" if self._states[track.id] == "kept" else "kept")
+
+    def _set_state(self, track: Track, state: str, remember: bool = True) -> None:
+        if self._creating or self._states[track.id] == state:
+            return
+        try:
+            set_track_skipped(track.id, state == "skipped")
+        except OSError as error:
+            self.notify(f"Could not save skip preference: {error}", severity="warning")
+            return
+        if remember:
+            self._undo.append((track.id, self._states[track.id]))
+        self._states[track.id] = state
         self._refresh_row(track)
-        self.query_one("#status-bar", Static).update(self._status_text())
+        self._refresh_status()
+
+    def action_keep_track(self) -> None:
+        if track := self._current_track():
+            self._set_state(track, "kept")
+
+    def action_skip_track(self) -> None:
+        if track := self._current_track():
+            self._set_state(track, "skipped")
+
+    def action_undo(self) -> None:
+        if self._creating:
+            return
+        while self._undo:
+            tid, state = self._undo.pop()
+            track = next((t for t in self._tracks if t.id == tid), None)
+            if track:
+                self._set_state(track, state, remember=False)
+                return
+
+    def action_replace_skipped(self) -> None:
+        self._replace_tracks({"skipped"})
+
+    def action_replace_unkept(self) -> None:
+        self._replace_tracks({"skipped", "default"})
+
+    def _replace_tracks(self, states: set[str]) -> None:
+        if self._creating:
+            return
+        indices = [i for i, t in enumerate(self._tracks) if self._states[t.id] in states]
+        if not indices:
+            self.notify("No tracks to replace.")
+            return
+        replaced = 0
+        discovery_count = int(len(indices) * max(0.0, min(self._pool.discovery_ratio, 1.0)))
+        preferences = [1.0] * discovery_count + [0.0] * (len(indices) - discovery_count)
+        random.shuffle(preferences)
+        for index, ratio in zip(indices, preferences):
+            # Retain all other rows so partial replacements also respect the cap.
+            retained = self._tracks[:index] + self._tracks[index + 1:]
+            replacement = self._pool.take(1, retained=retained, discovery_ratio=ratio)
+            if not replacement:
+                continue
+            old = self._tracks[index]
+            del self._states[old.id]
+            self._tracks[index] = replacement[0]
+            self._states[replacement[0].id] = "default"
+            replaced += 1
+        table = self.query_one(DataTable)
+        cursor = table.cursor_row
+        table.clear()
+        for i, track in enumerate(self._tracks):
+            table.add_row(*self._make_cells(track, i + 1), key=track.id)
+        table.move_cursor(row=cursor)
+        self._refresh_status()
+        self.notify(f"Replaced {replaced} of {len(indices)} tracks."
+                    + (" No more suitable candidates; discover again for a fresh pool."
+                       if replaced < len(indices) else ""))
 
     def action_open_preview(self) -> None:
         # If something is playing, stop it
@@ -254,9 +347,12 @@ class RecommendationsScreen(Screen):
         )
 
     def action_create_playlist(self) -> None:
-        kept = [t for t in self._tracks if self._states[t.id] == "kept"]
+        if self._creating:
+            return
+        kept = self._export_tracks()
         if not kept:
-            kept = list(self._tracks)
+            self.notify("Keep a track or undo a skip before creating a playlist.", severity="warning")
+            return
 
         genre_str = " · ".join(self._genres) if self._genres else ""
         today = date.today().strftime("%Y-%m-%d")
@@ -267,7 +363,17 @@ class RecommendationsScreen(Screen):
         name = " — ".join(parts)
         description = f"Personalized {self._mood} recommendations by DJ Rara · {today}"
 
+        self._creating = True
+        self._refresh_status()
         self._do_create_playlist(name=name, tracks=kept, description=description)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "create-playlist":
+            self.action_create_playlist()
+
+    def _finish_create(self) -> None:
+        self._creating = False
+        self._refresh_status()
 
     @work(thread=True)
     def _do_create_playlist(
@@ -289,8 +395,10 @@ class RecommendationsScreen(Screen):
             self.app.call_from_thread(lambda: webbrowser.open(playlist.url))
         except Exception as e:
             self.app.call_from_thread(
-                lambda: self.notify(f"♪ could not create playlist: {e}", severity="error")
+                lambda error=str(e): self.notify(f"♪ could not create playlist: {error}", severity="error")
             )
+        finally:
+            self.app.call_from_thread(self._finish_create)
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
