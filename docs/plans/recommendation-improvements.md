@@ -3,7 +3,7 @@
 ## Approach
 
 Keep the existing Spotify client, Textual screens, and JSON history. Implement
-the first batch below, then evaluate the remaining improvements separately.
+and commit each batch separately after its checks pass.
 No release or package version change is required for this implementation.
 
 ## Batch 1: selection and curation
@@ -61,8 +61,9 @@ pilot to exercise keyboard interactions. Run the complete existing suite.
 
 ## Acceptance
 
-Batch 1 is complete when its tests pass and all four behaviors work through the
-existing discovery screen. Batches 2 and 3 remain planned follow-up work.
+Each batch is complete when its behavioral tests pass and its interface changes
+work through the existing discovery screen. API availability and subjective
+music quality require separate live validation.
 
 ## Implementation status
 
@@ -86,3 +87,21 @@ fit is shown only for measured mean deviation at or below 0.2. Playlist counts
 reflect distinct fetched playlists, not duplicate entries within a playlist.
 Validation: 98 tests and 4 subtests pass, including cross-pool genre preference,
 missing metadata, explanation provenance, and headless detail-panel updates.
+
+Batch 3 is implemented. Discovery reports profile loading, familiar tracks,
+search, related artists, public playlists, genre validation, ranking, and
+completion. A thread-safe memory cache expires entries after ten minutes and
+evicts the least recently used entries above 512. Metadata gathered from top and
+followed artists is reused for genre checks. Successful empty responses can be
+cached; failures cannot. The client exposes endpoint status separately from data.
+403/410 responses disable optional catalog endpoints for the session, while
+transient errors and playlist-specific access errors remain retryable.
+
+Validation: 113 tests and 4 subtests pass. Tests cover expiry, eviction, mutation
+isolation, request reuse, endpoint access/transient/empty responses, and threaded
+progress callbacks through the real Mood and Recommendations screens.
+In a controlled one-track run with 10 ms of simulated latency per metadata call,
+cold/warm discovery used 3/0 metadata requests and took 37.90/0.12 ms. This is a
+synthetic measurement, not a live speed claim. A read-only capability check using
+the existing cached login stopped at Spotify OAuth; endpoint availability and
+live recommendation quality remain unverified. No new login was opened.

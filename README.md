@@ -88,6 +88,13 @@ The **Why this track** panel follows the selected row and shows its sources,
 matched artist genres, and public playlist occurrences. It only reports a close
 mood match when audio measurements support it.
 
+Discovery displays its current stage, from loading your listening profile to
+ranking the results. Artist metadata, top tracks, related artists, and taste
+lookups are cached in memory for ten minutes (up to 512 entries). Access-denied
+or removed optional endpoints are skipped for the rest of the session; restarting
+the app checks them again. Temporary failures remain retryable, and a denied
+playlist does not disable other playlists.
+
 ### Stats Screen — Music DNA
 Genre bars, audio profile, and top artists for your listening history.
 

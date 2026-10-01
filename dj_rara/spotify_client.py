@@ -1,12 +1,14 @@
 import random
 import time
 from datetime import date
+from typing import Callable
 
 import spotipy
 
 from .history import get_seen_track_ids, get_skipped_track_ids
 from .models import Artist, Playlist, Track
 from .selection import RecommendationPool
+from .cache import SessionCache
 
 # Related tags broaden discovery when exact genre matches run out. These are
 # musical neighbors, not equivalent genre labels; exact matches rank first.
@@ -109,10 +111,10 @@ def _parse_track(raw: dict) -> Track:
         name=raw["name"],
         artists=[a["name"] for a in raw["artists"]],
         album=raw["album"]["name"],
-        popularity=raw["popularity"],
+        popularity=raw.get("popularity", 0),
         preview_url=raw.get("preview_url"),
         uri=raw["uri"],
-        artist_ids=[a["id"] for a in raw["artists"] if "id" in a],
+        artist_ids=[a["id"] for a in raw["artists"] if a.get("id")],
         isrc=(raw.get("external_ids") or {}).get("isrc"),
     )
 
@@ -145,21 +147,86 @@ class SpotifyClient:
     def __init__(self, sp):
         self.sp = sp
         self.user_id: str = sp.current_user()["id"]
+        self._cache = SessionCache()
+        self._unavailable_endpoints: set[str] = set()
+        self.endpoint_status: dict[str, str] = {}
+
+    def _cached(self, key: tuple, fetch):
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        result = fetch()
+        self._cache.put(key, result)
+        return result
+
+    def _optional_call(self, endpoint: str, fetch, access_is_global: bool = True):
+        """Remember access failures, but retry transient/resource-specific errors."""
+        if endpoint in self._unavailable_endpoints:
+            return None
+        try:
+            result = _call_with_retry(fetch)
+        except spotipy.exceptions.SpotifyException as error:
+            if access_is_global and error.http_status in {403, 410}:
+                self._unavailable_endpoints.add(endpoint)
+                self.endpoint_status[endpoint] = f"unavailable ({error.http_status})"
+                return None
+            self.endpoint_status[endpoint] = f"failed ({error.http_status})"
+            raise
+        except Exception:
+            self.endpoint_status[endpoint] = "failed"
+            raise
+        self.endpoint_status[endpoint] = "available"
+        return result
+
+    def _artist_top_tracks(self, artist_id: str) -> dict:
+        result = self._cached(("artist_top_tracks", artist_id), lambda: self._optional_call(
+            "artist_top_tracks", lambda: self.sp.artist_top_tracks(artist_id)))
+        return result if result is not None else {"tracks": []}
+
+    def _related_artists(self, artist_id: str) -> dict:
+        result = self._cached(("related_artists", artist_id), lambda: self._optional_call(
+            "related_artists", lambda: self.sp.artist_related_artists(artist_id)))
+        return result if result is not None else {"artists": []}
+
+    def _artist_metadata(self, artist_ids: list[str]) -> dict[str, dict]:
+        result: dict[str, dict] = {}
+        missing: list[str] = []
+        for artist_id in dict.fromkeys(artist_ids):
+            cached = self._cache.get(("artist", artist_id))
+            if cached is None:
+                missing.append(artist_id)
+            else:
+                result[artist_id] = cached
+        for offset in range(0, len(missing), 50):
+            batch = missing[offset:offset + 50]
+            try:
+                raw = self._optional_call("artists", lambda b=batch: self.sp.artists(b))
+                if raw is None:
+                    break
+                for artist in raw["artists"]:
+                    if artist and artist.get("id"):
+                        self._cache.put(("artist", artist["id"]), artist)
+                        result[artist["id"]] = artist
+            except Exception:
+                continue
+        return result
 
     def get_top_tracks(self, time_range: str = "medium_term", limit: int = 50) -> list[Track]:
-        results = _call_with_retry(
+        results = self._cached(("top_tracks", time_range, min(limit, 50)), lambda: _call_with_retry(
             lambda: self.sp.current_user_top_tracks(
                 limit=min(limit, 50), offset=0, time_range=time_range
             )
-        )
+        ))
         return [_parse_track(t) for t in results["items"]][:limit]
 
     def get_top_artists(self, time_range: str = "medium_term", limit: int = 50) -> list[Artist]:
-        results = _call_with_retry(
+        results = self._cached(("top_artists", time_range, min(limit, 50)), lambda: _call_with_retry(
             lambda: self.sp.current_user_top_artists(
                 limit=min(limit, 50), offset=0, time_range=time_range
             )
-        )
+        ))
+        for artist in results["items"]:
+            self._cache.put(("artist", artist["id"]), artist)
         return [_parse_artist(a) for a in results["items"]][:limit]
 
     def get_followed_artists(self, limit: int = 50) -> list[Artist]:
@@ -168,6 +235,8 @@ class SpotifyClient:
             lambda: self.sp.current_user_followed_artists(limit=min(limit, 50))
         )
         while results and len(artists) < limit:
+            for artist in results["artists"]["items"]:
+                self._cache.put(("artist", artist["id"]), artist)
             artists.extend([_parse_artist(a) for a in results["artists"]["items"]])
             if results["artists"]["next"] and len(artists) < limit:
                 current = results["artists"]
@@ -183,7 +252,9 @@ class SpotifyClient:
         for i in range(0, len(track_ids), 100):
             batch = track_ids[i : i + 100]
             try:
-                raw = _call_with_retry(lambda b=batch: self.sp.audio_features(b))
+                raw = self._optional_call("audio_features", lambda b=batch: self.sp.audio_features(b))
+                if raw is None:
+                    break
                 result.update({f["id"]: f for f in raw if f is not None})
             except Exception:
                 pass
@@ -232,9 +303,12 @@ class SpotifyClient:
 
         for pid in playlist_ids[:max_playlists]:
             try:
-                raw = _call_with_retry(
-                    lambda p=pid: self.sp.playlist_tracks(p, limit=50)
+                raw = self._optional_call("playlist_tracks",
+                    lambda p=pid: self.sp.playlist_tracks(p, limit=50),
+                    access_is_global=False,
                 )
+                if raw is None:
+                    break
                 counted: set[str] = set()
                 for item in raw["items"]:
                     if not item or not item.get("track"):
@@ -276,6 +350,7 @@ class SpotifyClient:
         limit: int = 30,
         discovery_ratio: float = 0.5,
         candidate_pool: RecommendationPool | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> list[Track]:
         # Spotify deprecated /recommendations for new apps in late 2024.
         # Strategy: split into "familiar" pool (artist tops + saved + user tops)
@@ -289,6 +364,7 @@ class SpotifyClient:
         reasons: dict[str, list[str]] = {}
         genre_priority: dict[str, int] = {}
         genre_notice = ""
+        report = progress or (lambda message: None)
 
         def explain(tid: str, reason: str) -> None:
             entries = reasons.setdefault(tid, [])
@@ -320,11 +396,12 @@ class SpotifyClient:
                 discovery_ids.add(tid)
 
         # --- Familiar pool ---
+        report("Loading familiar tracks…")
         artist_ids = list(seed_artist_ids)
         random.shuffle(artist_ids)
         for artist_id in artist_ids[:8]:
             try:
-                raw = _call_with_retry(lambda a=artist_id: self.sp.artist_top_tracks(a))
+                raw = self._artist_top_tracks(artist_id)
                 for item in raw["tracks"]:
                     _add_familiar(item, "Top track from one of your seed artists")
             except Exception:
@@ -347,6 +424,7 @@ class SpotifyClient:
                 pass
 
         # --- Discovery pool: mood-keyed text search ---
+        report("Searching for new tracks…")
         MOOD_QUERIES = {
             "chill":      ["chill acoustic", "lo-fi indie", "mellow vibes"],
             "energetic":  ["high energy rock", "upbeat dance", "power pop"],
@@ -376,9 +454,7 @@ class SpotifyClient:
                     )
                     for artist in raw["artists"]["items"][:4]:
                         try:
-                            tops = _call_with_retry(
-                                lambda a=artist["id"]: self.sp.artist_top_tracks(a)
-                            )
+                            tops = self._artist_top_tracks(artist["id"])
                             for item in tops["tracks"][:4]:
                                 _add_discovery(item, f"From an artist found by genre search: {genre}")
                         except Exception:
@@ -391,9 +467,10 @@ class SpotifyClient:
         # When genres are selected, only follow edges to genre-matching artists so
         # the traversal stays in the right musical neighborhood.
         related_seen: set[str] = set(seed_artist_ids)
+        report("Finding related artists…")
         for seed_id in seed_artist_ids[:3]:
             try:
-                raw = _call_with_retry(lambda a=seed_id: self.sp.artist_related_artists(a))
+                raw = self._related_artists(seed_id)
                 related = raw["artists"]
                 if expanded:
                     related = [a for a in related if expanded & set(a.get("genres", []))]
@@ -402,9 +479,7 @@ class SpotifyClient:
                         continue
                     related_seen.add(artist["id"])
                     try:
-                        tops = _call_with_retry(
-                            lambda a=artist["id"]: self.sp.artist_top_tracks(a)
-                        )
+                        tops = self._artist_top_tracks(artist["id"])
                         for item in tops["tracks"][:4]:
                             _add_discovery(item, "From an artist related to your seed artists")
                     except Exception:
@@ -418,6 +493,7 @@ class SpotifyClient:
         # receive an IDF-normalized co-occurrence score that blends with
         # audio-feature mood proximity in the final ranking step below.
         proxy_counts: dict[str, int] = {}
+        report("Checking public playlists…")
         proxy_tracks, proxy_scores = self._fetch_playlist_proxy_tracks(
             mood, genres, seen_ids, occurrence_counts=proxy_counts
         )
@@ -434,18 +510,11 @@ class SpotifyClient:
         # like Slowdive (tagged "dream pop") pass the shoegaze filter.
         # Falls back to unfiltered pools only if nothing matches at all.
         if genres:
+            report("Checking artist genres…")
             all_candidates = familiar + [t for t in discovery if t.id not in familiar_ids]
             all_artist_ids = list({aid for t in all_candidates for aid in t.artist_ids})
-            artist_genres_map: dict[str, list[str]] = {}
-            for i in range(0, len(all_artist_ids), 50):
-                batch = all_artist_ids[i : i + 50]
-                try:
-                    raw = _call_with_retry(lambda b=batch: self.sp.artists(b))
-                    for a in raw["artists"]:
-                        if a:
-                            artist_genres_map[a["id"]] = a.get("genres", [])
-                except Exception:
-                    pass
+            artist_genres_map = {aid: artist.get("genres", [])
+                                 for aid, artist in self._artist_metadata(all_artist_ids).items()}
 
             exact = {g.strip().casefold() for g in genres}
             for track in all_candidates:
@@ -479,6 +548,7 @@ class SpotifyClient:
         # audio-feature mood proximity. Both pools are sorted descending so the
         # best combined candidates rise to the top before the ratio mix.
         mood_targets = MOOD_FEATURES.get(mood, {})
+        report("Ranking tracks…")
         all_ids = [t.id for t in familiar] + [t.id for t in discovery]
         features_map = self.get_audio_features(all_ids) if mood_targets else {}
 
@@ -517,6 +587,7 @@ class SpotifyClient:
         pool.displayed_recordings.clear()
         mixed = pool.take(limit)
         random.shuffle(mixed)
+        report(f"Ready · {len(mixed)} tracks")
         return mixed[:limit]
 
     def create_playlist(

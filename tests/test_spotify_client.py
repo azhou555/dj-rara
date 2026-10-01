@@ -666,3 +666,83 @@ class TestGenreExplanations:
             "Top track from one of your seed artists", "In your saved tracks",
             "Appears in 2 matching public playlists",
         ]
+
+
+class TestSessionRequests:
+    def test_artist_cache_batches_only_missing_ids_and_expires(self, client, mock_sp, monkeypatch):
+        monkeypatch.setattr("dj_rara.cache.monotonic", lambda: 0)
+        mock_sp.artists.side_effect = lambda ids: {"artists": [{"id": aid, "genres": []} for aid in ids]}
+        assert set(client._artist_metadata(["a", "b"])) == {"a", "b"}
+        assert set(client._artist_metadata(["b", "c"])) == {"b", "c"}
+        assert mock_sp.artists.call_args_list[1].args[0] == ["c"]
+        monkeypatch.setattr("dj_rara.cache.monotonic", lambda: 600)
+        client._artist_metadata(["a"])
+        assert mock_sp.artists.call_count == 3
+
+    def test_top_artists_populate_metadata_cache(self, client, mock_sp):
+        mock_sp.current_user_top_artists.return_value = {"items": [_raw_artist()]}
+        client.get_top_artists()
+        client.get_top_artists()
+        assert client._artist_metadata(["a1"])["a1"]["genres"] == ["indie folk", "folk rock"]
+        mock_sp.artists.assert_not_called()
+        mock_sp.current_user_top_artists.assert_called_once()
+
+    @pytest.mark.parametrize("status", [403, 410])
+    def test_unavailable_audio_stops_batches_and_future_calls(self, client, mock_sp, status):
+        from spotipy.exceptions import SpotifyException
+        mock_sp.audio_features.side_effect = SpotifyException(status, -1, "unavailable")
+        assert client.get_audio_features([str(i) for i in range(250)]) == {}
+        assert client.get_audio_features(["again"]) == {}
+        mock_sp.audio_features.assert_called_once()
+        assert client.endpoint_status["audio_features"] == f"unavailable ({status})"
+
+    @pytest.mark.parametrize("status", [401, 404, 500])
+    def test_transient_or_resource_error_is_not_cached(self, client, mock_sp, status):
+        from spotipy.exceptions import SpotifyException
+        mock_sp.artist_top_tracks.side_effect = [
+            SpotifyException(status, -1, "retry later"), {"tracks": []},
+        ]
+        with pytest.raises(SpotifyException):
+            client._artist_top_tracks("a")
+        assert client.endpoint_status["artist_top_tracks"] == f"failed ({status})"
+        assert client._artist_top_tracks("a") == {"tracks": []}
+        assert client._artist_top_tracks("a") == {"tracks": []}
+        assert mock_sp.artist_top_tracks.call_count == 2
+        assert client.endpoint_status["artist_top_tracks"] == "available"
+
+    def test_empty_audio_response_is_available_and_retryable(self, client, mock_sp):
+        mock_sp.audio_features.return_value = []
+        client.get_audio_features(["a"])
+        client.get_audio_features(["b"])
+        assert mock_sp.audio_features.call_count == 2
+        assert client.endpoint_status["audio_features"] == "available"
+
+    def test_playlist_denial_does_not_disable_other_playlists(self, client, mock_sp):
+        from spotipy.exceptions import SpotifyException
+        mock_sp.search.return_value = {"playlists": {"items": [{"id": "private"}, {"id": "public"}]}}
+        mock_sp.playlist_tracks.side_effect = [
+            SpotifyException(403, -1, "forbidden"), {"items": [{"track": _raw_track()}]},
+        ]
+        tracks, _ = client._fetch_playlist_proxy_tracks("chill", [], set())
+        assert len(tracks) == 1
+        assert mock_sp.playlist_tracks.call_count == 2
+
+    def test_repeat_discovery_reuses_metadata_and_reports_stages(self, client, mock_sp):
+        TestGetRecommendations()._setup_mock(mock_sp)
+        mock_sp.artists.return_value = {"artists": [_raw_artist(genres=["shoegaze"])]}
+        messages = []
+        for _ in range(2):
+            client.get_recommendations(["a1"], [], "chill", ["shoegaze"], progress=messages.append)
+        mock_sp.artist_top_tracks.assert_called_once()
+        mock_sp.artist_related_artists.assert_called_once()
+        mock_sp.artists.assert_called_once()
+        assert messages[:7] == [
+            "Loading familiar tracks…", "Searching for new tracks…", "Finding related artists…",
+            "Checking public playlists…", "Checking artist genres…", "Ranking tracks…", "Ready · 1 tracks",
+        ]
+
+    def test_parse_track_tolerates_absent_popularity(self, client, mock_sp):
+        raw = _raw_track()
+        del raw["popularity"]
+        mock_sp.current_user_top_tracks.return_value = {"items": [raw]}
+        assert client.get_top_tracks()[0].popularity == 0

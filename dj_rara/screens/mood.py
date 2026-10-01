@@ -6,6 +6,7 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Label, Static
 from textual import work
+from textual.worker import get_current_worker
 
 from ..spotify_client import GENRE_SYNONYMS
 from ..selection import RecommendationPool
@@ -89,6 +90,11 @@ class MoodScreen(Screen):
         margin-top: 1;
         margin-bottom: 0;
     }
+
+    #discovery-progress {
+        height: auto;
+        color: $muted;
+    }
     """
 
     VIBE_RATIOS = {"familiar": 0.1, "mixed": 0.5, "new": 0.9}
@@ -126,6 +132,7 @@ class MoodScreen(Screen):
                 yield Label("how many tracks?", classes="section-label")
                 yield Input(value="30", id="count-input", placeholder="30")
             yield Button("♫  discover", id="discover-btn", classes="primary")
+            yield Static("", id="discovery-progress", markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -214,6 +221,8 @@ class MoodScreen(Screen):
             self._start_discovery()
 
     def _start_discovery(self) -> None:
+        if self.query_one("#discover-btn", Button).disabled:
+            return
         try:
             count = int(self.query_one("#count-input", Input).value or "30")
             count = max(1, min(count, 100))
@@ -222,7 +231,8 @@ class MoodScreen(Screen):
 
         btn = self.query_one("#discover-btn", Button)
         btn.disabled = True
-        btn.label = "· brewing..."
+        btn.label = "Discovering…"
+        self._set_discovery_progress("Loading your listening profile…")
 
         self._fetch_recommendations(
             mood=self._selected_mood,
@@ -236,6 +246,12 @@ class MoodScreen(Screen):
     def _fetch_recommendations(
         self, mood: str, genres: list[str], time_range: str, count: int, discovery_ratio: float = 0.5
     ) -> None:
+        worker = get_current_worker()
+
+        def progress(message: str) -> None:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(self._set_discovery_progress, message)
+
         try:
             client = self.app.client
             top_artists = client.get_top_artists(time_range=time_range, limit=20)
@@ -273,12 +289,19 @@ class MoodScreen(Screen):
                 limit=count,
                 discovery_ratio=discovery_ratio,
                 candidate_pool=pool,
+                progress=progress,
             )
 
-            self.app.call_from_thread(lambda: self._on_recommendations_ready(tracks, mood, genres, pool))
+            if not worker.is_cancelled:
+                self.app.call_from_thread(lambda: self._on_recommendations_ready(tracks, mood, genres, pool))
 
         except Exception as e:
-            self.app.call_from_thread(lambda err=str(e): self._on_discovery_error(err))
+            if not worker.is_cancelled:
+                self.app.call_from_thread(lambda err=str(e): self._on_discovery_error(err))
+
+    def _set_discovery_progress(self, message: str) -> None:
+        if self.is_mounted:
+            self.query_one("#discovery-progress", Static).update(message)
 
     def _on_recommendations_ready(
         self, tracks, mood: str, genres: list[str], pool: RecommendationPool | None = None
@@ -288,6 +311,7 @@ class MoodScreen(Screen):
         btn = self.query_one("#discover-btn", Button)
         btn.disabled = False
         btn.label = "♫  discover"
+        self._set_discovery_progress(f"Found {len(tracks)} tracks.")
 
         if not tracks:
             self.notify("♪ no tracks found — try different settings", severity="warning")
@@ -300,6 +324,7 @@ class MoodScreen(Screen):
         btn = self.query_one("#discover-btn", Button)
         btn.disabled = False
         btn.label = "♫  discover"
+        self._set_discovery_progress("Discovery failed. Try again.")
 
     def action_go_stats(self) -> None:
         from .stats import StatsScreen
