@@ -137,3 +137,7 @@ Make sure DJ Rara is fully closed before upgrading. If you see errors about file
 ## License
 
 MIT
+
+## Download statistics
+
+The **PyPI download report** GitHub Actions workflow generates daily download totals, partial-window coverage, and an all-available-history total. See [download tracking](docs/analytics/README.md) for reports, local usage, retention, and release-level analysis. These statistics measure downloads rather than unique installations.
