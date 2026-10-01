@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -10,6 +10,7 @@ class Track:
     popularity: int
     preview_url: str | None
     uri: str
+    artist_ids: list[str] = field(default_factory=list)
 
 
 @dataclass

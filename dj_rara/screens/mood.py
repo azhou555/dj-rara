@@ -7,6 +7,8 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Label, Static
 from textual import work
 
+from ..spotify_client import GENRE_SYNONYMS
+
 EXPLORE_GENRES = [
     "afrobeats", "ambient", "bossa nova", "cumbia", "dark ambient",
     "drum and bass", "flamenco", "footwork", "garage rock", "gospel",
@@ -239,9 +241,26 @@ class MoodScreen(Screen):
             top_tracks = client.get_top_tracks(time_range=time_range, limit=20)
             followed = client.get_followed_artists(limit=20)
 
-            seed_artist_ids = list(
-                {a.id for a in top_artists[:10]} | {a.id for a in followed[:10]}
-            )
+            # When genres are selected, prefer artists whose genre tags overlap —
+            # this biases the familiar pool toward the requested genres before
+            # any API calls are made (zero cost).
+            if genres:
+                expanded = set()
+                for g in genres:
+                    expanded.update(GENRE_SYNONYMS.get(g, [g]))
+                genre_artists = [
+                    a for a in top_artists[:10]
+                    if expanded & set(a.genres)
+                ] or top_artists[:10]
+                genre_followed = [
+                    a for a in followed[:10]
+                    if expanded & set(a.genres)
+                ] or followed[:10]
+                seed_artist_ids = list({a.id for a in genre_artists} | {a.id for a in genre_followed})
+            else:
+                seed_artist_ids = list(
+                    {a.id for a in top_artists[:10]} | {a.id for a in followed[:10]}
+                )
             seed_track_ids = [t.id for t in top_tracks[:10]]
 
             tracks = client.get_recommendations(
@@ -252,22 +271,6 @@ class MoodScreen(Screen):
                 limit=count,
                 discovery_ratio=discovery_ratio,
             )
-
-            if len(tracks) < 3 and genres:
-                tracks = client.get_recommendations(
-                    seed_artist_ids=seed_artist_ids,
-                    seed_track_ids=seed_track_ids,
-                    mood=mood,
-                    genres=[],
-                    limit=count,
-                    discovery_ratio=discovery_ratio,
-                )
-                self.app.call_from_thread(
-                    lambda: self.notify(
-                        "♪ broadened search — genre filter dropped",
-                        severity="information",
-                    )
-                )
 
             self.app.call_from_thread(lambda t=tracks, m=mood, g=genres: self._on_recommendations_ready(t, m, g))
 
