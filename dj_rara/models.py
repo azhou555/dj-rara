@@ -11,6 +11,7 @@ class Track:
     preview_url: str | None
     uri: str
     artist_ids: list[str] = field(default_factory=list)
+    isrc: str | None = None
 
 
 @dataclass

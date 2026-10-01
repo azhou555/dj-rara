@@ -16,10 +16,10 @@ def client(mock_sp):
     return SpotifyClient(mock_sp)
 
 
-def _raw_track(id="t1", name="Skinny Love", artist="Bon Iver", artist_id="a1",
+def _raw_track(id="t1", name=None, artist="Bon Iver", artist_id="a1",
                album="For Emma", popularity=91, preview_url="https://example.com/p.mp3"):
     return {
-        "id": id, "name": name,
+        "id": id, "name": name if name is not None else ("Skinny Love" if id == "t1" else id),
         "artists": [{"name": artist, "id": artist_id}],
         "album": {"name": album},
         "popularity": popularity,
@@ -566,3 +566,183 @@ class TestGetUserPlaylists:
             "next": None,
         }
         assert client.get_user_playlists(name_prefix="DJ Rara") == []
+
+
+class TestRankingFallback:
+    def test_missing_audio_is_neutral_not_worst(self, client, mock_sp, monkeypatch):
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[
+            _raw_track(id="poor"), _raw_track(id="unknown"), _raw_track(id="good"),
+        ])
+        monkeypatch.setattr("dj_rara.spotify_client.random.shuffle", lambda values: None)
+        mock_sp.audio_features.return_value = [
+            {"id": "poor", "energy": 1.0, "valence": 0.0, "acousticness": 0.0, "tempo": 200},
+            {"id": "good", "energy": 0.3, "valence": 0.6, "acousticness": 0.7, "tempo": 90},
+        ]
+        tracks = client.get_recommendations(["a1"], [], "chill", [], limit=2)
+        assert [t.id for t in tracks] == ["good", "unknown"]
+
+    def test_ties_are_randomized_before_selection(self, client, mock_sp, monkeypatch):
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[
+            _raw_track(id="first"), _raw_track(id="last"),
+        ])
+        monkeypatch.setattr("dj_rara.spotify_client.random.shuffle", lambda values: values.reverse())
+        tracks = client.get_recommendations(["a1"], [], "chill", [], limit=1)
+        assert tracks[0].id == "last"
+
+    def test_reserve_is_populated_and_skips_excluded(self, client, mock_sp, monkeypatch):
+        from dj_rara.selection import RecommendationPool
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[
+            _raw_track(id="skipped"), _raw_track(id="a"), _raw_track(id="b"),
+        ])
+        monkeypatch.setattr("dj_rara.spotify_client.get_skipped_track_ids", lambda: {"skipped"})
+        pool = RecommendationPool()
+        tracks = client.get_recommendations(["a1"], [], "chill", [], limit=1, candidate_pool=pool)
+        reserve = pool.take(10)
+        assert len(tracks) == len(reserve) == 1
+        assert {t.id for t in tracks + reserve} == {"a", "b"}
+
+    def test_playlist_duplicates_do_not_inflate_score(self, client, mock_sp):
+        mock_sp.search.return_value = {"playlists": {"items": [{"id": "p1"}]}}
+        mock_sp.playlist_tracks.return_value = {"items": [
+            {"track": _raw_track(id="a")}, {"track": _raw_track(id="a")},
+            {"track": _raw_track(id="b")},
+        ]}
+        _, scores = client._fetch_playlist_proxy_tracks("chill", [], set())
+        assert scores["a"] == scores["b"]
+
+    def test_proxy_ranks_when_audio_unavailable(self, client, mock_sp, monkeypatch):
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[_raw_track(id="plain")])
+        monkeypatch.setattr("dj_rara.spotify_client.random.shuffle", lambda values: None)
+        from dj_rara.spotify_client import _parse_track
+        client._fetch_playlist_proxy_tracks = MagicMock(return_value=(
+            [_parse_track(_raw_track(id="proxy"))], {"proxy": 1.0},
+        ))
+        tracks = client.get_recommendations(["a1"], [], "chill", [], limit=1, discovery_ratio=1)
+        assert tracks[0].id == "proxy"
+
+
+class TestGenreExplanations:
+    def test_exact_genre_beats_better_mood_and_related_tag(self, client, mock_sp, monkeypatch):
+        from dj_rara.selection import RecommendationPool
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[
+            _raw_track(id="related", artist_id="r"), _raw_track(id="exact", artist_id="e"),
+        ])
+        mock_sp.artists.return_value = {"artists": [
+            {"id": "r", "genres": ["dream pop"]}, {"id": "e", "genres": [" Shoegaze "]},
+        ]}
+        mock_sp.audio_features.return_value = [{"id": "related", "energy": 0.3}]
+        pool = RecommendationPool()
+        tracks = client.get_recommendations(["a1"], [], "chill", ["shoegaze"], limit=1, candidate_pool=pool)
+        assert tracks[0].id == "exact"
+        assert "Artist genre matches: shoegaze" in pool.reasons["exact"]
+        assert "Related artist genre: dream pop" in pool.reasons["related"]
+        assert not any("Audio measurements" in reason for reason in pool.reasons["exact"])
+        assert any("Audio measurements" in reason for reason in pool.reasons["related"])
+
+    @pytest.mark.parametrize("tags,expected", [([], "metadata unavailable"), (["reggaeton"], "broader selection")])
+    def test_fallback_explains_missing_or_nonmatching_metadata(self, client, mock_sp, tags, expected):
+        from dj_rara.selection import RecommendationPool
+        TestGetRecommendations()._setup_mock(mock_sp)
+        mock_sp.artists.return_value = {"artists": [{"id": "a1", "genres": tags}]}
+        pool = RecommendationPool()
+        tracks = client.get_recommendations(["a1"], [], "chill", ["shoegaze"], candidate_pool=pool)
+        assert tracks
+        assert expected in pool.genre_notice
+        assert not any("genre matches" in reason for reason in pool.reasons[tracks[0].id])
+
+    def test_provenance_accumulates_without_inventing_mood_fit(self, client, mock_sp):
+        from dj_rara.selection import RecommendationPool
+        song = _raw_track(id="r1")
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[song])
+        mock_sp.current_user_saved_tracks.return_value = {"items": [{"track": song}]}
+        mock_sp.search.side_effect = lambda q, type, limit: (
+            {"playlists": {"items": [{"id": "p1"}, {"id": "p2"}]}} if type == "playlist"
+            else {"tracks": {"items": []}}
+        )
+        mock_sp.playlist_tracks.return_value = {"items": [{"track": song}, {"track": song}]}
+        pool = RecommendationPool()
+        client.get_recommendations(["a1"], [], "chill", [], candidate_pool=pool)
+        assert pool.reasons["r1"] == [
+            "Top track from one of your seed artists", "In your saved tracks",
+            "Appears in 2 matching public playlists",
+        ]
+
+
+class TestSessionRequests:
+    def test_artist_cache_batches_only_missing_ids_and_expires(self, client, mock_sp, monkeypatch):
+        monkeypatch.setattr("dj_rara.cache.monotonic", lambda: 0)
+        mock_sp.artists.side_effect = lambda ids: {"artists": [{"id": aid, "genres": []} for aid in ids]}
+        assert set(client._artist_metadata(["a", "b"])) == {"a", "b"}
+        assert set(client._artist_metadata(["b", "c"])) == {"b", "c"}
+        assert mock_sp.artists.call_args_list[1].args[0] == ["c"]
+        monkeypatch.setattr("dj_rara.cache.monotonic", lambda: 600)
+        client._artist_metadata(["a"])
+        assert mock_sp.artists.call_count == 3
+
+    def test_top_artists_populate_metadata_cache(self, client, mock_sp):
+        mock_sp.current_user_top_artists.return_value = {"items": [_raw_artist()]}
+        client.get_top_artists()
+        client.get_top_artists()
+        assert client._artist_metadata(["a1"])["a1"]["genres"] == ["indie folk", "folk rock"]
+        mock_sp.artists.assert_not_called()
+        mock_sp.current_user_top_artists.assert_called_once()
+
+    @pytest.mark.parametrize("status", [403, 410])
+    def test_unavailable_audio_stops_batches_and_future_calls(self, client, mock_sp, status):
+        from spotipy.exceptions import SpotifyException
+        mock_sp.audio_features.side_effect = SpotifyException(status, -1, "unavailable")
+        assert client.get_audio_features([str(i) for i in range(250)]) == {}
+        assert client.get_audio_features(["again"]) == {}
+        mock_sp.audio_features.assert_called_once()
+        assert client.endpoint_status["audio_features"] == f"unavailable ({status})"
+
+    @pytest.mark.parametrize("status", [401, 404, 500])
+    def test_transient_or_resource_error_is_not_cached(self, client, mock_sp, status):
+        from spotipy.exceptions import SpotifyException
+        mock_sp.artist_top_tracks.side_effect = [
+            SpotifyException(status, -1, "retry later"), {"tracks": []},
+        ]
+        with pytest.raises(SpotifyException):
+            client._artist_top_tracks("a")
+        assert client.endpoint_status["artist_top_tracks"] == f"failed ({status})"
+        assert client._artist_top_tracks("a") == {"tracks": []}
+        assert client._artist_top_tracks("a") == {"tracks": []}
+        assert mock_sp.artist_top_tracks.call_count == 2
+        assert client.endpoint_status["artist_top_tracks"] == "available"
+
+    def test_empty_audio_response_is_available_and_retryable(self, client, mock_sp):
+        mock_sp.audio_features.return_value = []
+        client.get_audio_features(["a"])
+        client.get_audio_features(["b"])
+        assert mock_sp.audio_features.call_count == 2
+        assert client.endpoint_status["audio_features"] == "available"
+
+    def test_playlist_denial_does_not_disable_other_playlists(self, client, mock_sp):
+        from spotipy.exceptions import SpotifyException
+        mock_sp.search.return_value = {"playlists": {"items": [{"id": "private"}, {"id": "public"}]}}
+        mock_sp.playlist_tracks.side_effect = [
+            SpotifyException(403, -1, "forbidden"), {"items": [{"track": _raw_track()}]},
+        ]
+        tracks, _ = client._fetch_playlist_proxy_tracks("chill", [], set())
+        assert len(tracks) == 1
+        assert mock_sp.playlist_tracks.call_count == 2
+
+    def test_repeat_discovery_reuses_metadata_and_reports_stages(self, client, mock_sp):
+        TestGetRecommendations()._setup_mock(mock_sp)
+        mock_sp.artists.return_value = {"artists": [_raw_artist(genres=["shoegaze"])]}
+        messages = []
+        for _ in range(2):
+            client.get_recommendations(["a1"], [], "chill", ["shoegaze"], progress=messages.append)
+        mock_sp.artist_top_tracks.assert_called_once()
+        mock_sp.artist_related_artists.assert_called_once()
+        mock_sp.artists.assert_called_once()
+        assert messages[:7] == [
+            "Loading familiar tracks…", "Searching for new tracks…", "Finding related artists…",
+            "Checking public playlists…", "Checking artist genres…", "Ranking tracks…", "Ready · 1 tracks",
+        ]
+
+    def test_parse_track_tolerates_absent_popularity(self, client, mock_sp):
+        raw = _raw_track()
+        del raw["popularity"]
+        mock_sp.current_user_top_tracks.return_value = {"items": [raw]}
+        assert client.get_top_tracks()[0].popularity == 0

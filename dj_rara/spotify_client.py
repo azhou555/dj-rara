@@ -1,16 +1,17 @@
 import random
 import time
 from datetime import date
+from typing import Callable
 
 import spotipy
 
-from .history import get_seen_track_ids
+from .history import get_seen_track_ids, get_skipped_track_ids
 from .models import Artist, Playlist, Track
+from .selection import RecommendationPool
+from .cache import SessionCache
 
-# Spotify's artist genre tags often don't use the exact genre label a user would
-# expect. This map expands each explore genre to the related Spotify tags it
-# commonly falls under, so the post-filter can match tracks from artists that
-# are genuinely in the genre even if Spotify uses a different label.
+# Related tags broaden discovery when exact genre matches run out. These are
+# musical neighbors, not equivalent genre labels; exact matches rank first.
 GENRE_SYNONYMS: dict[str, list[str]] = {
     "afrobeats":        ["afrobeats", "afropop", "afro soul", "highlife"],
     "ambient":          ["ambient", "drone", "dark ambient", "new age"],
@@ -51,21 +52,22 @@ GENRE_SYNONYMS: dict[str, list[str]] = {
 
 
 def _expand_genres(genres: list[str]) -> set[str]:
-    """Expand genre labels to include Spotify synonym tags."""
+    """Expand genre labels to include related Spotify tags."""
     expanded: set[str] = set()
     for g in genres:
-        expanded.update(GENRE_SYNONYMS.get(g, [g]))
+        normalized = g.strip().casefold()
+        expanded.update(GENRE_SYNONYMS.get(normalized, [normalized]))
     return expanded
 
 
-def _mood_score(features: dict | None, targets: dict[str, float]) -> float:
+def _mood_score(features: dict | None, targets: dict[str, float]) -> float | None:
     """Mean absolute deviation from mood audio feature targets.
 
-    Lower = closer match. Returns 1.0 (worst) for tracks with no feature data.
+    Lower = closer match. Returns None when no comparable measurements exist.
     Tempo is normalized to [0, 1] by dividing by 200 BPM before comparison.
     """
     if not features:
-        return 1.0
+        return None
     checks = [
         ("energy",       "target_energy",       1.0),
         ("valence",      "target_valence",       1.0),
@@ -74,10 +76,10 @@ def _mood_score(features: dict | None, targets: dict[str, float]) -> float:
     ]
     total, count = 0.0, 0
     for feature, target_key, scale in checks:
-        if target_key in targets and feature in features:
+        if target_key in targets and isinstance(features.get(feature), (int, float)):
             total += abs(features[feature] / scale - targets[target_key] / scale)
             count += 1
-    return total / count if count else 1.0
+    return total / count if count else None
 
 
 MOOD_FEATURES: dict[str, dict[str, float]] = {
@@ -109,10 +111,11 @@ def _parse_track(raw: dict) -> Track:
         name=raw["name"],
         artists=[a["name"] for a in raw["artists"]],
         album=raw["album"]["name"],
-        popularity=raw["popularity"],
+        popularity=raw.get("popularity", 0),
         preview_url=raw.get("preview_url"),
         uri=raw["uri"],
-        artist_ids=[a["id"] for a in raw["artists"] if "id" in a],
+        artist_ids=[a["id"] for a in raw["artists"] if a.get("id")],
+        isrc=(raw.get("external_ids") or {}).get("isrc"),
     )
 
 
@@ -144,21 +147,86 @@ class SpotifyClient:
     def __init__(self, sp):
         self.sp = sp
         self.user_id: str = sp.current_user()["id"]
+        self._cache = SessionCache()
+        self._unavailable_endpoints: set[str] = set()
+        self.endpoint_status: dict[str, str] = {}
+
+    def _cached(self, key: tuple, fetch):
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        result = fetch()
+        self._cache.put(key, result)
+        return result
+
+    def _optional_call(self, endpoint: str, fetch, access_is_global: bool = True):
+        """Remember access failures, but retry transient/resource-specific errors."""
+        if endpoint in self._unavailable_endpoints:
+            return None
+        try:
+            result = _call_with_retry(fetch)
+        except spotipy.exceptions.SpotifyException as error:
+            if access_is_global and error.http_status in {403, 410}:
+                self._unavailable_endpoints.add(endpoint)
+                self.endpoint_status[endpoint] = f"unavailable ({error.http_status})"
+                return None
+            self.endpoint_status[endpoint] = f"failed ({error.http_status})"
+            raise
+        except Exception:
+            self.endpoint_status[endpoint] = "failed"
+            raise
+        self.endpoint_status[endpoint] = "available"
+        return result
+
+    def _artist_top_tracks(self, artist_id: str) -> dict:
+        result = self._cached(("artist_top_tracks", artist_id), lambda: self._optional_call(
+            "artist_top_tracks", lambda: self.sp.artist_top_tracks(artist_id)))
+        return result if result is not None else {"tracks": []}
+
+    def _related_artists(self, artist_id: str) -> dict:
+        result = self._cached(("related_artists", artist_id), lambda: self._optional_call(
+            "related_artists", lambda: self.sp.artist_related_artists(artist_id)))
+        return result if result is not None else {"artists": []}
+
+    def _artist_metadata(self, artist_ids: list[str]) -> dict[str, dict]:
+        result: dict[str, dict] = {}
+        missing: list[str] = []
+        for artist_id in dict.fromkeys(artist_ids):
+            cached = self._cache.get(("artist", artist_id))
+            if cached is None:
+                missing.append(artist_id)
+            else:
+                result[artist_id] = cached
+        for offset in range(0, len(missing), 50):
+            batch = missing[offset:offset + 50]
+            try:
+                raw = self._optional_call("artists", lambda b=batch: self.sp.artists(b))
+                if raw is None:
+                    break
+                for artist in raw["artists"]:
+                    if artist and artist.get("id"):
+                        self._cache.put(("artist", artist["id"]), artist)
+                        result[artist["id"]] = artist
+            except Exception:
+                continue
+        return result
 
     def get_top_tracks(self, time_range: str = "medium_term", limit: int = 50) -> list[Track]:
-        results = _call_with_retry(
+        results = self._cached(("top_tracks", time_range, min(limit, 50)), lambda: _call_with_retry(
             lambda: self.sp.current_user_top_tracks(
                 limit=min(limit, 50), offset=0, time_range=time_range
             )
-        )
+        ))
         return [_parse_track(t) for t in results["items"]][:limit]
 
     def get_top_artists(self, time_range: str = "medium_term", limit: int = 50) -> list[Artist]:
-        results = _call_with_retry(
+        results = self._cached(("top_artists", time_range, min(limit, 50)), lambda: _call_with_retry(
             lambda: self.sp.current_user_top_artists(
                 limit=min(limit, 50), offset=0, time_range=time_range
             )
-        )
+        ))
+        for artist in results["items"]:
+            self._cache.put(("artist", artist["id"]), artist)
         return [_parse_artist(a) for a in results["items"]][:limit]
 
     def get_followed_artists(self, limit: int = 50) -> list[Artist]:
@@ -167,6 +235,8 @@ class SpotifyClient:
             lambda: self.sp.current_user_followed_artists(limit=min(limit, 50))
         )
         while results and len(artists) < limit:
+            for artist in results["artists"]["items"]:
+                self._cache.put(("artist", artist["id"]), artist)
             artists.extend([_parse_artist(a) for a in results["artists"]["items"]])
             if results["artists"]["next"] and len(artists) < limit:
                 current = results["artists"]
@@ -182,7 +252,9 @@ class SpotifyClient:
         for i in range(0, len(track_ids), 100):
             batch = track_ids[i : i + 100]
             try:
-                raw = _call_with_retry(lambda b=batch: self.sp.audio_features(b))
+                raw = self._optional_call("audio_features", lambda b=batch: self.sp.audio_features(b))
+                if raw is None:
+                    break
                 result.update({f["id"]: f for f in raw if f is not None})
             except Exception:
                 pass
@@ -194,6 +266,7 @@ class SpotifyClient:
         genres: list[str],
         seen_ids: set[str],
         max_playlists: int = 8,
+        occurrence_counts: dict[str, int] | None = None,
     ) -> tuple[list[Track], dict[str, float]]:
         """Crowd-validate tracks via public playlist co-occurrence.
 
@@ -230,16 +303,21 @@ class SpotifyClient:
 
         for pid in playlist_ids[:max_playlists]:
             try:
-                raw = _call_with_retry(
-                    lambda p=pid: self.sp.playlist_tracks(p, limit=50)
+                raw = self._optional_call("playlist_tracks",
+                    lambda p=pid: self.sp.playlist_tracks(p, limit=50),
+                    access_is_global=False,
                 )
+                if raw is None:
+                    break
+                counted: set[str] = set()
                 for item in raw["items"]:
                     if not item or not item.get("track"):
                         continue
                     t = item["track"]
                     tid = t.get("id")
-                    if not tid or tid in seen_ids:
+                    if not tid or tid in seen_ids or tid in counted:
                         continue
+                    counted.add(tid)
                     cooc[tid] = cooc.get(tid, 0) + 1
                     if tid not in track_objects:
                         track_objects[tid] = _parse_track(t)
@@ -259,6 +337,8 @@ class SpotifyClient:
 
         max_raw = max(raw_scores.values())
         proxy_scores = {tid: s / max_raw for tid, s in raw_scores.items()}
+        if occurrence_counts is not None:
+            occurrence_counts.update(cooc)
         return list(track_objects.values()), proxy_scores
 
     def get_recommendations(
@@ -269,45 +349,61 @@ class SpotifyClient:
         genres: list[str],
         limit: int = 30,
         discovery_ratio: float = 0.5,
+        candidate_pool: RecommendationPool | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> list[Track]:
         # Spotify deprecated /recommendations for new apps in late 2024.
         # Strategy: split into "familiar" pool (artist tops + saved + user tops)
         # and "discovery" pool (search + related artists). discovery_ratio controls
         # the mix. Both pools are sorted by mood-feature proximity before selection.
-        seen_ids = get_seen_track_ids()
+        seen_ids = get_seen_track_ids() | get_skipped_track_ids()
         familiar: list[Track] = []
         discovery: list[Track] = []
         familiar_ids: set[str] = set()
         discovery_ids: set[str] = set()
+        reasons: dict[str, list[str]] = {}
+        genre_priority: dict[str, int] = {}
+        genre_notice = ""
+        report = progress or (lambda message: None)
+
+        def explain(tid: str, reason: str) -> None:
+            entries = reasons.setdefault(tid, [])
+            if reason not in entries:
+                entries.append(reason)
 
         # Pre-compute expanded genres once — shared by related-artist traversal
         # and genre post-filter so we don't expand twice.
         expanded: set[str] = _expand_genres(genres) if genres else set()
 
-        def _add_familiar(item: dict) -> None:
+        def _add_familiar(item: dict, reason: str) -> None:
             if not item:
                 return
             tid = item.get("id")
+            if tid and tid not in seen_ids:
+                explain(tid, reason)
             if tid and tid not in seen_ids and tid not in familiar_ids and tid not in discovery_ids:
                 familiar.append(_parse_track(item))
                 familiar_ids.add(tid)
 
-        def _add_discovery(item: dict) -> None:
+        def _add_discovery(item: dict, reason: str) -> None:
             if not item:
                 return
             tid = item.get("id")
+            if tid and tid not in seen_ids:
+                explain(tid, reason)
             if tid and tid not in seen_ids and tid not in familiar_ids and tid not in discovery_ids:
                 discovery.append(_parse_track(item))
                 discovery_ids.add(tid)
 
         # --- Familiar pool ---
+        report("Loading familiar tracks…")
         artist_ids = list(seed_artist_ids)
         random.shuffle(artist_ids)
         for artist_id in artist_ids[:8]:
             try:
-                raw = _call_with_retry(lambda a=artist_id: self.sp.artist_top_tracks(a))
+                raw = self._artist_top_tracks(artist_id)
                 for item in raw["tracks"]:
-                    _add_familiar(item)
+                    _add_familiar(item, "Top track from one of your seed artists")
             except Exception:
                 continue
 
@@ -315,7 +411,7 @@ class SpotifyClient:
             raw = _call_with_retry(lambda: self.sp.current_user_saved_tracks(limit=50))
             for item in raw["items"]:
                 if item.get("track"):
-                    _add_familiar(item["track"])
+                    _add_familiar(item["track"], "In your saved tracks")
         except Exception:
             pass
 
@@ -323,11 +419,12 @@ class SpotifyClient:
             try:
                 raw = _call_with_retry(lambda ids=seed_track_ids[:50]: self.sp.tracks(ids))
                 for item in raw["tracks"]:
-                    _add_familiar(item)
+                    _add_familiar(item, "Selected from your listening history")
             except Exception:
                 pass
 
         # --- Discovery pool: mood-keyed text search ---
+        report("Searching for new tracks…")
         MOOD_QUERIES = {
             "chill":      ["chill acoustic", "lo-fi indie", "mellow vibes"],
             "energetic":  ["high energy rock", "upbeat dance", "power pop"],
@@ -342,7 +439,7 @@ class SpotifyClient:
             try:
                 raw = _call_with_retry(lambda q=query: self.sp.search(q=q, type="track", limit=50))
                 for item in raw["tracks"]["items"]:
-                    _add_discovery(item)
+                    _add_discovery(item, f"Found by search: {query}")
             except Exception:
                 continue
 
@@ -357,11 +454,9 @@ class SpotifyClient:
                     )
                     for artist in raw["artists"]["items"][:4]:
                         try:
-                            tops = _call_with_retry(
-                                lambda a=artist["id"]: self.sp.artist_top_tracks(a)
-                            )
+                            tops = self._artist_top_tracks(artist["id"])
                             for item in tops["tracks"][:4]:
-                                _add_discovery(item)
+                                _add_discovery(item, f"From an artist found by genre search: {genre}")
                         except Exception:
                             continue
                 except Exception:
@@ -372,9 +467,10 @@ class SpotifyClient:
         # When genres are selected, only follow edges to genre-matching artists so
         # the traversal stays in the right musical neighborhood.
         related_seen: set[str] = set(seed_artist_ids)
+        report("Finding related artists…")
         for seed_id in seed_artist_ids[:3]:
             try:
-                raw = _call_with_retry(lambda a=seed_id: self.sp.artist_related_artists(a))
+                raw = self._related_artists(seed_id)
                 related = raw["artists"]
                 if expanded:
                     related = [a for a in related if expanded & set(a.get("genres", []))]
@@ -383,11 +479,9 @@ class SpotifyClient:
                         continue
                     related_seen.add(artist["id"])
                     try:
-                        tops = _call_with_retry(
-                            lambda a=artist["id"]: self.sp.artist_top_tracks(a)
-                        )
+                        tops = self._artist_top_tracks(artist["id"])
                         for item in tops["tracks"][:4]:
-                            _add_discovery(item)
+                            _add_discovery(item, "From an artist related to your seed artists")
                     except Exception:
                         continue
             except Exception:
@@ -398,10 +492,15 @@ class SpotifyClient:
         # mood/genre context. Tracks that appear across multiple playlists
         # receive an IDF-normalized co-occurrence score that blends with
         # audio-feature mood proximity in the final ranking step below.
+        proxy_counts: dict[str, int] = {}
+        report("Checking public playlists…")
         proxy_tracks, proxy_scores = self._fetch_playlist_proxy_tracks(
-            mood, genres, seen_ids
+            mood, genres, seen_ids, occurrence_counts=proxy_counts
         )
         for t in proxy_tracks:
+            if t.id in proxy_counts:
+                count = proxy_counts[t.id]
+                explain(t.id, f"Appears in {count} matching public playlist{'s' if count != 1 else ''}")
             if t.id not in familiar_ids and t.id not in discovery_ids:
                 discovery.append(t)
                 discovery_ids.add(t.id)
@@ -411,30 +510,35 @@ class SpotifyClient:
         # like Slowdive (tagged "dream pop") pass the shoegaze filter.
         # Falls back to unfiltered pools only if nothing matches at all.
         if genres:
+            report("Checking artist genres…")
             all_candidates = familiar + [t for t in discovery if t.id not in familiar_ids]
             all_artist_ids = list({aid for t in all_candidates for aid in t.artist_ids})
-            artist_genres_map: dict[str, list[str]] = {}
-            for i in range(0, len(all_artist_ids), 50):
-                batch = all_artist_ids[i : i + 50]
-                try:
-                    raw = _call_with_retry(lambda b=batch: self.sp.artists(b))
-                    for a in raw["artists"]:
-                        if a:
-                            artist_genres_map[a["id"]] = a.get("genres", [])
-                except Exception:
-                    pass
+            artist_genres_map = {aid: artist.get("genres", [])
+                                 for aid, artist in self._artist_metadata(all_artist_ids).items()}
 
-            def _genre_matches(track: Track) -> bool:
-                return any(
-                    expanded & set(artist_genres_map.get(aid, []))
-                    for aid in track.artist_ids
-                )
+            exact = {g.strip().casefold() for g in genres}
+            for track in all_candidates:
+                tags = {g.strip().casefold() for aid in track.artist_ids
+                        for g in artist_genres_map.get(aid, [])}
+                matched = exact & tags
+                related = expanded & tags
+                genre_priority[track.id] = 2 if matched else 1 if related else 0
+                if matched:
+                    explain(track.id, "Artist genre matches: " + ", ".join(sorted(matched)))
+                elif related:
+                    explain(track.id, "Related artist genre: " + ", ".join(sorted(related)))
+                elif not tags:
+                    explain(track.id, "Artist genre metadata unavailable")
 
-            f_filtered = [t for t in familiar if _genre_matches(t)]
-            d_filtered = [t for t in discovery if _genre_matches(t)]
+            f_filtered = [t for t in familiar if genre_priority[t.id]]
+            d_filtered = [t for t in discovery if genre_priority[t.id]]
             if f_filtered or d_filtered:
                 familiar = f_filtered
                 discovery = d_filtered
+            elif not any(artist_genres_map.values()):
+                genre_notice = "Artist genre metadata unavailable; genre filter could not be verified."
+            else:
+                genre_notice = "No exact or related genre matches; showing a broader selection."
 
         # --- Blended ranking: mood proximity + playlist proxy signal ---
         # mood_goodness = 1 - _mood_score (converts cost→goodness, both in [0,1]).
@@ -444,26 +548,46 @@ class SpotifyClient:
         # audio-feature mood proximity. Both pools are sorted descending so the
         # best combined candidates rise to the top before the ratio mix.
         mood_targets = MOOD_FEATURES.get(mood, {})
+        report("Ranking tracks…")
         all_ids = [t.id for t in familiar] + [t.id for t in discovery]
         features_map = self.get_audio_features(all_ids) if mood_targets else {}
 
-        def _rank(t: Track) -> float:
-            mood_goodness = 1.0 - _mood_score(features_map.get(t.id), mood_targets)
-            return (1.0 - PROXY_BLEND_WEIGHT) * mood_goodness + PROXY_BLEND_WEIGHT * proxy_scores.get(t.id, 0.0)
+        mood_scores = {tid: _mood_score(features_map.get(tid), mood_targets) for tid in all_ids}
+        for tid, score in mood_scores.items():
+            if score is not None and score <= 0.2:
+                explain(tid, f"Audio measurements close to the {mood} targets")
+        has_mood = any(score is not None for score in mood_scores.values())
+        has_proxy = any(tid in proxy_scores for tid in all_ids)
 
+        def _rank(t: Track) -> float:
+            score = mood_scores[t.id]
+            mood_goodness = max(0.0, 1.0 - score) if score is not None else 0.5
+            mood_weight = 1.0 - PROXY_BLEND_WEIGHT if has_mood else 0.0
+            proxy_weight = PROXY_BLEND_WEIGHT if has_proxy else 0.0
+            weight = mood_weight + proxy_weight
+            return ((mood_weight * mood_goodness + proxy_weight * proxy_scores.get(t.id, 0.0))
+                    / weight) if weight else 0.0
+
+        # Stable sorting now breaks ties randomly, rather than by fetch order.
+        random.shuffle(familiar)
+        random.shuffle(discovery)
         familiar.sort(key=_rank, reverse=True)
         discovery.sort(key=_rank, reverse=True)
 
         # Mix pools according to discovery_ratio (sorted order drives selection;
         # shuffle at the end handles presentation randomness)
-        n_discovery = int(limit * discovery_ratio)
-        n_familiar = limit - n_discovery
-        mixed = familiar[:n_familiar] + discovery[:n_discovery]
-        if len(mixed) < limit:
-            used = {t.id for t in mixed}
-            filler = [t for t in (discovery + familiar) if t.id not in used]
-            mixed += filler[:limit - len(mixed)]
+        pool = candidate_pool if candidate_pool is not None else RecommendationPool()
+        pool.familiar = familiar
+        pool.discovery = discovery
+        pool.discovery_ratio = discovery_ratio
+        pool.reasons = reasons
+        pool.genre_priority = genre_priority
+        pool.genre_notice = genre_notice
+        pool.displayed_ids.clear()
+        pool.displayed_recordings.clear()
+        mixed = pool.take(limit)
         random.shuffle(mixed)
+        report(f"Ready · {len(mixed)} tracks")
         return mixed[:limit]
 
     def create_playlist(
