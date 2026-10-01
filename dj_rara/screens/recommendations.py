@@ -11,7 +11,7 @@ from datetime import date
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Static
 from textual import work
@@ -79,6 +79,18 @@ class RecommendationsScreen(Screen):
         height: 1fr;
     }
 
+    #genre-notice {
+        height: auto;
+        padding: 0 2;
+        color: $warning;
+    }
+
+    #reason-panel {
+        height: 5;
+        padding: 0 2;
+        border-top: solid $subtle-border;
+    }
+
     #preview-msg {
         height: 1;
         padding: 0 2;
@@ -123,6 +135,9 @@ class RecommendationsScreen(Screen):
             classes="title",
         )
         yield DataTable(id="track-table", cursor_type="row", zebra_stripes=False)
+        yield Static("", id="genre-notice", markup=False)
+        with VerticalScroll(id="reason-panel"):
+            yield Static("", id="track-reasons", markup=False)
         yield Static("", id="preview-msg")
         yield Static(self._status_text(), id="status-bar")
         yield Button(self._export_label(), id="create-playlist")
@@ -172,6 +187,25 @@ class RecommendationsScreen(Screen):
         button = self.query_one("#create-playlist", Button)
         button.label = self._export_label()
         button.disabled = self._creating or not self._export_tracks()
+        notice = self._pool.genre_notice
+        if not notice and any(self._pool.genre_priority.get(t.id) == 1 for t in self._tracks):
+            notice = "Includes related genres after available exact matches."
+        self.query_one("#genre-notice", Static).update(notice)
+        self._refresh_details()
+
+    def _refresh_details(self) -> None:
+        track = self._current_track()
+        if track is None:
+            text = ""
+        else:
+            reasons = self._pool.reasons.get(track.id, [])
+            text = f"Why this track · {track.name}\n" + "\n".join(
+                f"• {reason}" for reason in (reasons or ["No source details available"]))
+        self.query_one("#track-reasons", Static).update(text)
+        self.query_one("#reason-panel", VerticalScroll).scroll_home(animate=False)
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._refresh_details()
 
     def _current_track(self) -> Track | None:
         table = self.query_one(DataTable)

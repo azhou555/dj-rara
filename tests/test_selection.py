@@ -46,3 +46,15 @@ def test_collaborations_count_toward_each_artist():
     pool = RecommendationPool(discovery=[collaboration, track("other", "c")])
     selected = pool.take(1, retained=[track("a1"), track("a2")])
     assert [t.id for t in selected] == ["other"]
+
+
+def test_exact_genres_take_priority_across_pools_and_replacements():
+    pool = RecommendationPool(
+        familiar=[track("related", "a")],
+        discovery=[track("exact1", "b"), track("exact2", "c")],
+        discovery_ratio=0,
+        genre_priority={"related": 1, "exact1": 2, "exact2": 2},
+    )
+    assert [t.id for t in pool.take(1)] == ["exact1"]
+    assert [t.id for t in pool.take(1)] == ["exact2"]
+    assert [t.id for t in pool.take(1)] == ["related"]

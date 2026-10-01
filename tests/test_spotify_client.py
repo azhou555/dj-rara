@@ -619,3 +619,50 @@ class TestRankingFallback:
         ))
         tracks = client.get_recommendations(["a1"], [], "chill", [], limit=1, discovery_ratio=1)
         assert tracks[0].id == "proxy"
+
+
+class TestGenreExplanations:
+    def test_exact_genre_beats_better_mood_and_related_tag(self, client, mock_sp, monkeypatch):
+        from dj_rara.selection import RecommendationPool
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[
+            _raw_track(id="related", artist_id="r"), _raw_track(id="exact", artist_id="e"),
+        ])
+        mock_sp.artists.return_value = {"artists": [
+            {"id": "r", "genres": ["dream pop"]}, {"id": "e", "genres": [" Shoegaze "]},
+        ]}
+        mock_sp.audio_features.return_value = [{"id": "related", "energy": 0.3}]
+        pool = RecommendationPool()
+        tracks = client.get_recommendations(["a1"], [], "chill", ["shoegaze"], limit=1, candidate_pool=pool)
+        assert tracks[0].id == "exact"
+        assert "Artist genre matches: shoegaze" in pool.reasons["exact"]
+        assert "Related artist genre: dream pop" in pool.reasons["related"]
+        assert not any("Audio measurements" in reason for reason in pool.reasons["exact"])
+        assert any("Audio measurements" in reason for reason in pool.reasons["related"])
+
+    @pytest.mark.parametrize("tags,expected", [([], "metadata unavailable"), (["reggaeton"], "broader selection")])
+    def test_fallback_explains_missing_or_nonmatching_metadata(self, client, mock_sp, tags, expected):
+        from dj_rara.selection import RecommendationPool
+        TestGetRecommendations()._setup_mock(mock_sp)
+        mock_sp.artists.return_value = {"artists": [{"id": "a1", "genres": tags}]}
+        pool = RecommendationPool()
+        tracks = client.get_recommendations(["a1"], [], "chill", ["shoegaze"], candidate_pool=pool)
+        assert tracks
+        assert expected in pool.genre_notice
+        assert not any("genre matches" in reason for reason in pool.reasons[tracks[0].id])
+
+    def test_provenance_accumulates_without_inventing_mood_fit(self, client, mock_sp):
+        from dj_rara.selection import RecommendationPool
+        song = _raw_track(id="r1")
+        TestGetRecommendations()._setup_mock(mock_sp, tracks=[song])
+        mock_sp.current_user_saved_tracks.return_value = {"items": [{"track": song}]}
+        mock_sp.search.side_effect = lambda q, type, limit: (
+            {"playlists": {"items": [{"id": "p1"}, {"id": "p2"}]}} if type == "playlist"
+            else {"tracks": {"items": []}}
+        )
+        mock_sp.playlist_tracks.return_value = {"items": [{"track": song}, {"track": song}]}
+        pool = RecommendationPool()
+        client.get_recommendations(["a1"], [], "chill", [], candidate_pool=pool)
+        assert pool.reasons["r1"] == [
+            "Top track from one of your seed artists", "In your saved tracks",
+            "Appears in 2 matching public playlists",
+        ]

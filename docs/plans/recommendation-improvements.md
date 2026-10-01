@@ -77,3 +77,12 @@ uses the requested mix where available and checks artist limits against every
 other visible row, so partially filled replacements remain within the cap.
 Undo applies to keep/skip decisions on tracks still displayed. Replaced skips
 retain their cooldown.
+
+Batch 2 is implemented. Exact genre matches take priority across both candidate
+pools and replacements; the requested familiar/discovery mix applies within a
+genre tier. Related matches and unverified/broadened filtering are disclosed.
+Per-track source details survive replacement and update with the cursor. Mood
+fit is shown only for measured mean deviation at or below 0.2. Playlist counts
+reflect distinct fetched playlists, not duplicate entries within a playlist.
+Validation: 98 tests and 4 subtests pass, including cross-pool genre preference,
+missing metadata, explanation provenance, and headless detail-panel updates.

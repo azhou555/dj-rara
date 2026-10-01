@@ -121,3 +121,24 @@ def test_create_worker_recovers_and_exports_correct_tracks(monkeypatch, fail):
             assert [t.id for t in app.client.create_playlist.call_args.kwargs["tracks"]] == ["b"]
             assert get_seen_track_ids() == (set() if fail else {"b"})
     asyncio.run(check())
+
+
+def test_explanations_follow_cursor_and_replacements():
+    from textual.widgets import Static
+    async def check():
+        pool = RecommendationPool(
+            discovery=[track("c")],
+            reasons={"a": ["In your saved tracks"], "b": ["Related artist genre: dream pop"],
+                     "c": ["Found by search: [ambient]"]},
+            genre_priority={"a": 2, "b": 1, "c": 2},
+        )
+        screen = RecommendationsScreen([track("a"), track("b")], "chill", ["shoegaze"], pool)
+        async with CurationApp(screen).run_test(size=(100, 30)) as pilot:
+            assert "saved tracks" in str(screen.query_one("#track-reasons", Static).render())
+            assert "related genres" in str(screen.query_one("#genre-notice", Static).render())
+            await pilot.press("down")
+            assert "dream pop" in str(screen.query_one("#track-reasons", Static).render())
+            await pilot.press("x", "r")
+            assert "[ambient]" in str(screen.query_one("#track-reasons", Static).render())
+            assert str(screen.query_one("#genre-notice", Static).render()) == ""
+    asyncio.run(check())

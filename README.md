@@ -82,6 +82,12 @@ recordings. Results may be shorter than requested when there aren't enough
 distinct candidates. Missing audio measurements receive a neutral score, and
 ties are randomized before selection.
 
+Exact artist genre tags take priority over related genres, including when tracks
+are replaced. The screen reports broadened or unverifiable genre filtering.
+The **Why this track** panel follows the selected row and shows its sources,
+matched artist genres, and public playlist occurrences. It only reports a close
+mood match when audio measurements support it.
+
 ### Stats Screen — Music DNA
 Genre bars, audio profile, and top artists for your listening history.
 

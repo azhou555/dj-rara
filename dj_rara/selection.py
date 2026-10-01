@@ -26,6 +26,9 @@ class RecommendationPool:
     discovery_ratio: float = 0.5
     displayed_ids: set[str] = field(default_factory=set)
     displayed_recordings: set[tuple] = field(default_factory=set)
+    reasons: dict[str, list[str]] = field(default_factory=dict)
+    genre_priority: dict[str, int] = field(default_factory=dict)
+    genre_notice: str = ""
 
     def take(self, limit: int, retained: list[Track] | None = None,
              discovery_ratio: float | None = None) -> list[Track]:
@@ -36,11 +39,12 @@ class RecommendationPool:
         for track in retained:
             recordings.update(recording_keys(track))
         chosen: list[Track] = []
+        discovery_ids = {t.id for t in self.discovery}
 
         def add(pool: list[Track], quota: int) -> None:
             added = 0
             for track in pool:
-                if added >= quota:
+                if added >= quota or len(chosen) >= limit:
                     break
                 artists = artist_keys(track)
                 keys = recording_keys(track)
@@ -56,9 +60,18 @@ class RecommendationPool:
 
         ratio = self.discovery_ratio if discovery_ratio is None else discovery_ratio
         discovery_count = int(limit * max(0.0, min(ratio, 1.0)))
-        add(self.familiar, limit - discovery_count)
-        add(self.discovery, discovery_count)
-        add(self.discovery + self.familiar, limit - len(chosen))
+        # Exhaust exact genre matches before considering related genres, even
+        # when that means borrowing slots from the other discovery pool.
+        priorities = sorted({self.genre_priority.get(t.id, 0)
+                             for t in self.familiar + self.discovery}, reverse=True)
+        for priority in priorities:
+            familiar = [t for t in self.familiar if self.genre_priority.get(t.id, 0) == priority]
+            discovery = [t for t in self.discovery if self.genre_priority.get(t.id, 0) == priority]
+            selected_discovery = sum(t.id in discovery_ids for t in chosen)
+            selected_familiar = len(chosen) - selected_discovery
+            add(familiar, max(0, limit - discovery_count - selected_familiar))
+            add(discovery, max(0, discovery_count - selected_discovery))
+            add(discovery + familiar, limit - len(chosen))
         self.displayed_ids.update(t.id for t in chosen)
         for track in chosen:
             self.displayed_recordings.update(recording_keys(track))

@@ -8,10 +8,8 @@ from .history import get_seen_track_ids, get_skipped_track_ids
 from .models import Artist, Playlist, Track
 from .selection import RecommendationPool
 
-# Spotify's artist genre tags often don't use the exact genre label a user would
-# expect. This map expands each explore genre to the related Spotify tags it
-# commonly falls under, so the post-filter can match tracks from artists that
-# are genuinely in the genre even if Spotify uses a different label.
+# Related tags broaden discovery when exact genre matches run out. These are
+# musical neighbors, not equivalent genre labels; exact matches rank first.
 GENRE_SYNONYMS: dict[str, list[str]] = {
     "afrobeats":        ["afrobeats", "afropop", "afro soul", "highlife"],
     "ambient":          ["ambient", "drone", "dark ambient", "new age"],
@@ -52,10 +50,11 @@ GENRE_SYNONYMS: dict[str, list[str]] = {
 
 
 def _expand_genres(genres: list[str]) -> set[str]:
-    """Expand genre labels to include Spotify synonym tags."""
+    """Expand genre labels to include related Spotify tags."""
     expanded: set[str] = set()
     for g in genres:
-        expanded.update(GENRE_SYNONYMS.get(g, [g]))
+        normalized = g.strip().casefold()
+        expanded.update(GENRE_SYNONYMS.get(normalized, [normalized]))
     return expanded
 
 
@@ -196,6 +195,7 @@ class SpotifyClient:
         genres: list[str],
         seen_ids: set[str],
         max_playlists: int = 8,
+        occurrence_counts: dict[str, int] | None = None,
     ) -> tuple[list[Track], dict[str, float]]:
         """Crowd-validate tracks via public playlist co-occurrence.
 
@@ -263,6 +263,8 @@ class SpotifyClient:
 
         max_raw = max(raw_scores.values())
         proxy_scores = {tid: s / max_raw for tid, s in raw_scores.items()}
+        if occurrence_counts is not None:
+            occurrence_counts.update(cooc)
         return list(track_objects.values()), proxy_scores
 
     def get_recommendations(
@@ -284,23 +286,35 @@ class SpotifyClient:
         discovery: list[Track] = []
         familiar_ids: set[str] = set()
         discovery_ids: set[str] = set()
+        reasons: dict[str, list[str]] = {}
+        genre_priority: dict[str, int] = {}
+        genre_notice = ""
+
+        def explain(tid: str, reason: str) -> None:
+            entries = reasons.setdefault(tid, [])
+            if reason not in entries:
+                entries.append(reason)
 
         # Pre-compute expanded genres once — shared by related-artist traversal
         # and genre post-filter so we don't expand twice.
         expanded: set[str] = _expand_genres(genres) if genres else set()
 
-        def _add_familiar(item: dict) -> None:
+        def _add_familiar(item: dict, reason: str) -> None:
             if not item:
                 return
             tid = item.get("id")
+            if tid and tid not in seen_ids:
+                explain(tid, reason)
             if tid and tid not in seen_ids and tid not in familiar_ids and tid not in discovery_ids:
                 familiar.append(_parse_track(item))
                 familiar_ids.add(tid)
 
-        def _add_discovery(item: dict) -> None:
+        def _add_discovery(item: dict, reason: str) -> None:
             if not item:
                 return
             tid = item.get("id")
+            if tid and tid not in seen_ids:
+                explain(tid, reason)
             if tid and tid not in seen_ids and tid not in familiar_ids and tid not in discovery_ids:
                 discovery.append(_parse_track(item))
                 discovery_ids.add(tid)
@@ -312,7 +326,7 @@ class SpotifyClient:
             try:
                 raw = _call_with_retry(lambda a=artist_id: self.sp.artist_top_tracks(a))
                 for item in raw["tracks"]:
-                    _add_familiar(item)
+                    _add_familiar(item, "Top track from one of your seed artists")
             except Exception:
                 continue
 
@@ -320,7 +334,7 @@ class SpotifyClient:
             raw = _call_with_retry(lambda: self.sp.current_user_saved_tracks(limit=50))
             for item in raw["items"]:
                 if item.get("track"):
-                    _add_familiar(item["track"])
+                    _add_familiar(item["track"], "In your saved tracks")
         except Exception:
             pass
 
@@ -328,7 +342,7 @@ class SpotifyClient:
             try:
                 raw = _call_with_retry(lambda ids=seed_track_ids[:50]: self.sp.tracks(ids))
                 for item in raw["tracks"]:
-                    _add_familiar(item)
+                    _add_familiar(item, "Selected from your listening history")
             except Exception:
                 pass
 
@@ -347,7 +361,7 @@ class SpotifyClient:
             try:
                 raw = _call_with_retry(lambda q=query: self.sp.search(q=q, type="track", limit=50))
                 for item in raw["tracks"]["items"]:
-                    _add_discovery(item)
+                    _add_discovery(item, f"Found by search: {query}")
             except Exception:
                 continue
 
@@ -366,7 +380,7 @@ class SpotifyClient:
                                 lambda a=artist["id"]: self.sp.artist_top_tracks(a)
                             )
                             for item in tops["tracks"][:4]:
-                                _add_discovery(item)
+                                _add_discovery(item, f"From an artist found by genre search: {genre}")
                         except Exception:
                             continue
                 except Exception:
@@ -392,7 +406,7 @@ class SpotifyClient:
                             lambda a=artist["id"]: self.sp.artist_top_tracks(a)
                         )
                         for item in tops["tracks"][:4]:
-                            _add_discovery(item)
+                            _add_discovery(item, "From an artist related to your seed artists")
                     except Exception:
                         continue
             except Exception:
@@ -403,10 +417,14 @@ class SpotifyClient:
         # mood/genre context. Tracks that appear across multiple playlists
         # receive an IDF-normalized co-occurrence score that blends with
         # audio-feature mood proximity in the final ranking step below.
+        proxy_counts: dict[str, int] = {}
         proxy_tracks, proxy_scores = self._fetch_playlist_proxy_tracks(
-            mood, genres, seen_ids
+            mood, genres, seen_ids, occurrence_counts=proxy_counts
         )
         for t in proxy_tracks:
+            if t.id in proxy_counts:
+                count = proxy_counts[t.id]
+                explain(t.id, f"Appears in {count} matching public playlist{'s' if count != 1 else ''}")
             if t.id not in familiar_ids and t.id not in discovery_ids:
                 discovery.append(t)
                 discovery_ids.add(t.id)
@@ -429,17 +447,29 @@ class SpotifyClient:
                 except Exception:
                     pass
 
-            def _genre_matches(track: Track) -> bool:
-                return any(
-                    expanded & set(artist_genres_map.get(aid, []))
-                    for aid in track.artist_ids
-                )
+            exact = {g.strip().casefold() for g in genres}
+            for track in all_candidates:
+                tags = {g.strip().casefold() for aid in track.artist_ids
+                        for g in artist_genres_map.get(aid, [])}
+                matched = exact & tags
+                related = expanded & tags
+                genre_priority[track.id] = 2 if matched else 1 if related else 0
+                if matched:
+                    explain(track.id, "Artist genre matches: " + ", ".join(sorted(matched)))
+                elif related:
+                    explain(track.id, "Related artist genre: " + ", ".join(sorted(related)))
+                elif not tags:
+                    explain(track.id, "Artist genre metadata unavailable")
 
-            f_filtered = [t for t in familiar if _genre_matches(t)]
-            d_filtered = [t for t in discovery if _genre_matches(t)]
+            f_filtered = [t for t in familiar if genre_priority[t.id]]
+            d_filtered = [t for t in discovery if genre_priority[t.id]]
             if f_filtered or d_filtered:
                 familiar = f_filtered
                 discovery = d_filtered
+            elif not any(artist_genres_map.values()):
+                genre_notice = "Artist genre metadata unavailable; genre filter could not be verified."
+            else:
+                genre_notice = "No exact or related genre matches; showing a broader selection."
 
         # --- Blended ranking: mood proximity + playlist proxy signal ---
         # mood_goodness = 1 - _mood_score (converts cost→goodness, both in [0,1]).
@@ -453,6 +483,9 @@ class SpotifyClient:
         features_map = self.get_audio_features(all_ids) if mood_targets else {}
 
         mood_scores = {tid: _mood_score(features_map.get(tid), mood_targets) for tid in all_ids}
+        for tid, score in mood_scores.items():
+            if score is not None and score <= 0.2:
+                explain(tid, f"Audio measurements close to the {mood} targets")
         has_mood = any(score is not None for score in mood_scores.values())
         has_proxy = any(tid in proxy_scores for tid in all_ids)
 
@@ -477,6 +510,9 @@ class SpotifyClient:
         pool.familiar = familiar
         pool.discovery = discovery
         pool.discovery_ratio = discovery_ratio
+        pool.reasons = reasons
+        pool.genre_priority = genre_priority
+        pool.genre_notice = genre_notice
         pool.displayed_ids.clear()
         pool.displayed_recordings.clear()
         mixed = pool.take(limit)
